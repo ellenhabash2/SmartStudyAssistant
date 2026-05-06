@@ -88,11 +88,38 @@ if "retrieval_service" in st.session_state:
         quiz_service = QuizService(st.session_state.retrieval_service)
 
         with st.spinner("Generating quiz..."):
-            quiz_questions = quiz_service.generate_quiz(
+            st.session_state.quiz_questions = quiz_service.generate_quiz(
                 topic=quiz_topic,
                 num_questions=num_questions,
             )
+            st.session_state.quiz_index = 0
+            st.session_state.show_answer = False
 
-        for i, q in enumerate(quiz_questions, start=1):
-            st.markdown(f"**Question {i}:** {q.question}")
-            st.markdown(f"**Answer:** {q.answer}")
+    if "quiz_questions" in st.session_state:
+        quiz_questions = st.session_state.quiz_questions
+        quiz_index = st.session_state.quiz_index
+        current_question = quiz_questions[quiz_index]
+
+        st.divider()
+        st.subheader(f"Question {quiz_index + 1} of {len(quiz_questions)}")
+        st.markdown(f"**{current_question.question}**")
+
+        if st.button("Show answer"):
+            st.session_state.show_answer = True
+
+        if st.session_state.show_answer:
+            st.markdown(f"**Answer:** {current_question.answer}")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("Previous", disabled=quiz_index == 0):
+                st.session_state.quiz_index -= 1
+                st.session_state.show_answer = False
+                st.rerun()
+
+        with col2:
+            if st.button("Next", disabled=quiz_index == len(quiz_questions) - 1):
+                st.session_state.quiz_index += 1
+                st.session_state.show_answer = False
+                st.rerun()
