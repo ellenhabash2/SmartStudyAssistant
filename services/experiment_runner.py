@@ -14,22 +14,20 @@ This lets us measure exactly which design choices affect system quality.
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from pathlib import Path
 
-from core.config import CHUNK_SIZE, CHUNK_OVERLAP
 from core.models import DocumentChunk
-from services.pdf_service import PdfService
 from services.chunk_service import ChunkService
+from services.dataset_loader import DatasetLoader, ExperimentDataset
 from services.embedding_service import EmbeddingService
 from services.vector_store_service import VectorStoreService
 from services.retrieval_service import RetrievalService
-from services.qa_service import QAService
 from services.evaluation_service import EvaluationService, AggregatedMetrics, EvaluationResult
 from services.baseline_retriever import RetrievalBaselines
+from reranking.rerankers import HeuristicReranker
 
 
 @dataclass
@@ -40,6 +38,9 @@ class ExperimentConfig:
     top_k: int
     embedding_provider: str = "mock"
     embedding_model: str = "text-embedding-3-small"
+    chunking_strategy: str = "recursive"
+    retrieval_mode: str = "semantic"  # Options: semantic, bm25, hybrid
+    reranker: Optional[str] = None  # Options: heuristic
     answer_mode: str = "retrieved_chunks"  # Options: retrieved_chunks, llm (future), baseline
     baseline_method: Optional[str] = None  # If answer_mode=baseline
 
@@ -53,7 +54,9 @@ class ExperimentConfig:
             f"chunk_size={self.chunk_size}, "
             f"overlap={self.chunk_overlap}, "
             f"top_k={self.top_k}, "
-            f"provider={self.embedding_provider}"
+            f"provider={self.embedding_provider}, "
+            f"chunking={self.chunking_strategy}, "
+            f"retrieval={self.retrieval_mode}"
         )
 
 
@@ -79,6 +82,14 @@ class ExperimentResult:
             **metrics_dict,
         }
 
+    def retrieval_method(self) -> str:
+        """Label the retrieval method used in reports."""
+        if self.config.baseline_method:
+            return f"baseline:{self.config.baseline_method}"
+        if self.config.reranker:
+            return f"{self.config.retrieval_mode}+rerank:{self.config.reranker}"
+        return self.config.retrieval_mode
+
 
 class ExperimentRunner:
     """
@@ -89,6 +100,7 @@ class ExperimentRunner:
         self,
         pdf_path: str,
         eval_dataset_path: str,
+        dataset: ExperimentDataset | None = None,
     ):
         """
         Initialize experiment runner.
@@ -96,16 +108,19 @@ class ExperimentRunner:
         Args:
             pdf_path: Path to PDF file
             eval_dataset_path: Path to evaluation dataset JSON
+            dataset: Optional pre-loaded dataset. If omitted, load a local PDF dataset.
         """
+        if dataset is None:
+            dataset = DatasetLoader.load_pdf_dataset(pdf_path, eval_dataset_path)
+
+        self.dataset = dataset
         self.pdf_path = Path(pdf_path)
         self.eval_dataset_path = Path(eval_dataset_path)
+        self.eval_dataset = dataset.eval_questions
 
-        # Load evaluation dataset
-        with open(self.eval_dataset_path) as f:
-            self.eval_dataset = json.load(f)
-
+        print(f"✓ Loaded dataset: {self.dataset.name}")
         print(f"✓ Loaded {len(self.eval_dataset)} evaluation questions")
-        print(f"✓ PDF: {self.pdf_path}")
+        print(f"✓ Source: {self.dataset.source_path}")
 
     def run_experiments(
         self,
@@ -161,13 +176,12 @@ class ExperimentRunner:
             ExperimentResult with all metrics
         """
         try:
-            # Step 1: Extract PDF
+            # Step 1: Load dataset pages
             if verbose:
-                print("  1. Extracting PDF...")
-            pdf_service = PdfService()
-            pages = pdf_service.extract_pages(self.pdf_path)
+                print("  1. Loading dataset pages...")
+            pages = self.dataset.pages
             if verbose:
-                print(f"     ✓ Extracted {len(pages)} pages")
+                print(f"     ✓ Loaded {len(pages)} pages/sections")
 
             # Step 2: Chunk with config settings
             if verbose:
@@ -175,6 +189,7 @@ class ExperimentRunner:
             chunk_service = ChunkService(
                 chunk_size=config.chunk_size,
                 chunk_overlap=config.chunk_overlap,
+                strategy=config.chunking_strategy,
             )
             chunks = chunk_service.chunk_pages(pages)
             if verbose:
@@ -198,9 +213,13 @@ class ExperimentRunner:
             vector_store.add(chunks, embeddings)
 
             # Step 5: Setup retrieval
+            reranker = HeuristicReranker() if config.reranker == "heuristic" else None
             retrieval_service = RetrievalService(
                 embedding_service=embedding_service,
                 vector_store=vector_store,
+                chunks=chunks,
+                retrieval_mode=config.retrieval_mode,
+                reranker=reranker,
             )
 
             # Also setup baselines if needed
@@ -288,9 +307,12 @@ class ExperimentRunner:
         Returns:
             EvaluationResult with all metrics
         """
-        question = q_data["question"]
-        ground_truth_answer = q_data["answer"]
-        source_text = q_data["source_text"]
+        question = str(q_data.get("question", "") or "").strip()
+        ground_truth_answer = str(q_data.get("answer", "") or "").strip()
+        source_text = str(q_data.get("source_text", "") or "").strip()
+
+        if not question or not ground_truth_answer:
+            raise ValueError("Evaluation record is missing question or answer.")
 
         # Step 1: Retrieve chunks
         start_time = time.time()
@@ -345,6 +367,12 @@ class ExperimentComparator:
         if not self.results:
             return None
         return max(self.results, key=lambda r: r.aggregated_metrics.accuracy)
+
+    def find_worst_config_by_accuracy(self) -> Optional[ExperimentResult]:
+        """Find configuration with lowest accuracy."""
+        if not self.results:
+            return None
+        return min(self.results, key=lambda r: r.aggregated_metrics.accuracy)
 
     def find_best_config_by_grounding(self) -> Optional[ExperimentResult]:
         """Find configuration with highest grounding score."""
