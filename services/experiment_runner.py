@@ -23,11 +23,12 @@ from core.models import DocumentChunk
 from services.chunk_service import ChunkService
 from services.dataset_loader import DatasetLoader, ExperimentDataset
 from services.embedding_service import EmbeddingService
-from services.vector_store_service import VectorStoreService
 from services.retrieval_service import RetrievalService
 from services.evaluation_service import EvaluationService, AggregatedMetrics, EvaluationResult
 from services.baseline_retriever import RetrievalBaselines
 from reranking.rerankers import HeuristicReranker
+from vectorstores.factory import VectorStoreFactory
+from generation.answer_generator import AnswerGenerator
 
 
 @dataclass
@@ -41,6 +42,11 @@ class ExperimentConfig:
     chunking_strategy: str = "recursive"
     retrieval_mode: str = "semantic"  # Options: semantic, bm25, hybrid
     reranker: Optional[str] = None  # Options: heuristic
+    vector_store: str = "memory"  # Options: memory, faiss, chroma, qdrant
+    vector_store_path: Optional[str] = None
+    generation_mode: str = "retrieved_chunks"  # Options: retrieved_chunks, grounded
+    llm_provider: str = "mock"  # Options: mock, openai
+    show_citations: bool = False
     answer_mode: str = "retrieved_chunks"  # Options: retrieved_chunks, llm (future), baseline
     baseline_method: Optional[str] = None  # If answer_mode=baseline
 
@@ -56,7 +62,9 @@ class ExperimentConfig:
             f"top_k={self.top_k}, "
             f"provider={self.embedding_provider}, "
             f"chunking={self.chunking_strategy}, "
-            f"retrieval={self.retrieval_mode}"
+            f"retrieval={self.retrieval_mode}, "
+            f"vector_store={self.vector_store}, "
+            f"generation={self.generation_mode}"
         )
 
 
@@ -208,9 +216,15 @@ class ExperimentRunner:
 
             # Step 4: Build vector store
             if verbose:
-                print("  4. Building vector store...")
-            vector_store = VectorStoreService()
+                print(f"  4. Building vector store ({config.vector_store})...")
+            vector_store = VectorStoreFactory.create(
+                backend=config.vector_store,
+                collection_name=f"{self.dataset.name}_{config.chunking_strategy}",
+                persist_path=config.vector_store_path,
+            )
             vector_store.add(chunks, embeddings)
+            if config.vector_store_path:
+                vector_store.save(config.vector_store_path)
 
             # Step 5: Setup retrieval
             reranker = HeuristicReranker() if config.reranker == "heuristic" else None
@@ -220,6 +234,10 @@ class ExperimentRunner:
                 chunks=chunks,
                 retrieval_mode=config.retrieval_mode,
                 reranker=reranker,
+            )
+            answer_generator = AnswerGenerator(
+                llm_provider=config.llm_provider,
+                show_citations=config.show_citations,
             )
 
             # Also setup baselines if needed
@@ -242,6 +260,7 @@ class ExperimentRunner:
                         config,
                         retrieval_service,
                         baselines,
+                        answer_generator,
                         chunks,
                     )
                     evaluation_results.append(result)
@@ -292,6 +311,7 @@ class ExperimentRunner:
         config: ExperimentConfig,
         retrieval_service: RetrievalService,
         baselines: RetrievalBaselines,
+        answer_generator: AnswerGenerator,
         chunks: List[DocumentChunk],
     ) -> EvaluationResult:
         """
@@ -324,6 +344,8 @@ class ExperimentRunner:
                 top_k=config.top_k,
             )
             retrieved_chunks = [r.chunk.text for r in retrieval_response.results]
+            used_chunk_ids: list[str] = []
+            cited_chunk_ids: list[str] = []
 
         elif config.answer_mode == "baseline" and config.baseline_method:
             # Use baseline retrieval
@@ -334,11 +356,26 @@ class ExperimentRunner:
             retrieved_chunks = RetrievalBaselines.chunks_to_text(
                 baseline_results[config.baseline_method]
             )
+            used_chunk_ids = []
+            cited_chunk_ids = []
         else:
             retrieved_chunks = []
+            used_chunk_ids = []
+            cited_chunk_ids = []
 
-        # Step 2: Generate answer (currently naive concatenation)
-        if retrieved_chunks:
+        # Step 2: Generate answer
+        if config.answer_mode == "retrieved_chunks" and config.generation_mode == "grounded":
+            generation_contexts = AnswerGenerator.contexts_from_search_results(
+                retrieval_response.results
+            )
+            generation_result = answer_generator.generate(
+                question=question,
+                contexts=generation_contexts,
+            )
+            generated_answer = generation_result.answer
+            used_chunk_ids = generation_result.used_chunk_ids
+            cited_chunk_ids = [citation.chunk_id for citation in generation_result.citations]
+        elif retrieved_chunks:
             generated_answer = "\n".join(retrieved_chunks)
         else:
             generated_answer = ""
@@ -353,6 +390,8 @@ class ExperimentRunner:
             retrieved_chunks=retrieved_chunks,
             response_time=response_time,
             expected_source_text=source_text,
+            used_chunk_ids=used_chunk_ids,
+            cited_chunk_ids=cited_chunk_ids,
         )
 
 

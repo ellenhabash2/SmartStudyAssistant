@@ -14,7 +14,7 @@ for the final system.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 import json
 import math
@@ -39,11 +39,16 @@ class EvaluationResult:
     ndcg: float
     grounding_score: float
     hallucination_rate: float
+    answer_relevancy: float
+    citation_coverage: float
+    context_usage_rate: float
     response_time: float
     retrieved_chunks: List[str]
     generated_answer: str
     ground_truth_answer: str
     success: bool  # Did all metrics compute without error?
+    used_chunk_ids: List[str] = field(default_factory=list)
+    cited_chunk_ids: List[str] = field(default_factory=list)
 
 
 class EvaluationService:
@@ -251,6 +256,8 @@ class EvaluationService:
         if not answer or not retrieved_context:
             return 0.0
 
+        answer = EvaluationService._strip_citation_boilerplate(answer)
+
         # Tokenize answer into words
         answer_tokens = set(answer.lower().split())
 
@@ -266,6 +273,46 @@ class EvaluationService:
         grounding_score = len(grounded_tokens) / len(answer_tokens)
 
         return min(grounding_score, 1.0)
+
+    @staticmethod
+    def _strip_citation_boilerplate(answer: str) -> str:
+        """Remove citation markers/source lists before grounding-token checks."""
+        answer = (answer or "").split("\n\nSources:", 1)[0]
+        return answer.replace("[1]", "").replace("[2]", "").replace("[3]", "")
+
+    @staticmethod
+    def calculate_answer_relevancy(
+        question: str,
+        answer: str,
+    ) -> float:
+        """Placeholder lexical relevancy score until semantic judge metrics land."""
+        question_tokens = set(question.lower().split())
+        answer_tokens = set(answer.lower().split())
+        if not question_tokens or not answer_tokens:
+            return 0.0
+        return len(question_tokens & answer_tokens) / len(question_tokens)
+
+    @staticmethod
+    def calculate_citation_coverage(
+        used_chunk_ids: List[str] | None,
+        cited_chunk_ids: List[str] | None,
+    ) -> float:
+        """How many used evidence chunks have citations."""
+        used = set(used_chunk_ids or [])
+        cited = set(cited_chunk_ids or [])
+        if not used:
+            return 0.0
+        return len(used & cited) / len(used)
+
+    @staticmethod
+    def calculate_context_usage_rate(
+        used_chunk_ids: List[str] | None,
+        retrieved_chunks: List[str],
+    ) -> float:
+        """Fraction of retrieved chunks used by the generator."""
+        if not retrieved_chunks:
+            return 0.0
+        return len(set(used_chunk_ids or [])) / len(retrieved_chunks)
 
     @staticmethod
     def calculate_response_time(
@@ -297,6 +344,8 @@ class EvaluationService:
         retrieved_chunks: List[str],
         response_time: float,
         expected_source_text: str,
+        used_chunk_ids: List[str] | None = None,
+        cited_chunk_ids: List[str] | None = None,
     ) -> EvaluationResult:
         """
         Evaluate a single Q&A pair using all metrics.
@@ -331,6 +380,17 @@ class EvaluationService:
             ndcg = EvaluationService.calculate_ndcg(
                 retrieved_chunks, expected_source_text
             )
+            answer_relevancy = EvaluationService.calculate_answer_relevancy(
+                question, generated_answer
+            )
+            citation_coverage = EvaluationService.calculate_citation_coverage(
+                used_chunk_ids,
+                cited_chunk_ids,
+            )
+            context_usage_rate = EvaluationService.calculate_context_usage_rate(
+                used_chunk_ids,
+                retrieved_chunks,
+            )
 
             return EvaluationResult(
                 question=question,
@@ -341,10 +401,15 @@ class EvaluationService:
                 ndcg=ndcg,
                 grounding_score=grounding,
                 hallucination_rate=max(0.0, 1.0 - grounding),
+                answer_relevancy=answer_relevancy,
+                citation_coverage=citation_coverage,
+                context_usage_rate=context_usage_rate,
                 response_time=response_time,
                 retrieved_chunks=retrieved_chunks,
                 generated_answer=generated_answer,
                 ground_truth_answer=ground_truth_answer,
+                used_chunk_ids=used_chunk_ids or [],
+                cited_chunk_ids=cited_chunk_ids or [],
                 success=True,
             )
         except Exception as e:
@@ -358,10 +423,15 @@ class EvaluationService:
                 ndcg=0.0,
                 grounding_score=0.0,
                 hallucination_rate=1.0,
+                answer_relevancy=0.0,
+                citation_coverage=0.0,
+                context_usage_rate=0.0,
                 response_time=response_time,
                 retrieved_chunks=[],
                 generated_answer=generated_answer,
                 ground_truth_answer=ground_truth_answer,
+                used_chunk_ids=used_chunk_ids or [],
+                cited_chunk_ids=cited_chunk_ids or [],
                 success=False,
             )
 
@@ -430,6 +500,27 @@ class AggregatedMetrics:
         return sum(r.hallucination_rate for r in self.results) / self.count
 
     @property
+    def answer_relevancy(self) -> float:
+        """Average lexical answer relevancy placeholder."""
+        if not self.results:
+            return 0.0
+        return sum(r.answer_relevancy for r in self.results) / self.count
+
+    @property
+    def citation_coverage(self) -> float:
+        """Average citation coverage for used chunks."""
+        if not self.results:
+            return 0.0
+        return sum(r.citation_coverage for r in self.results) / self.count
+
+    @property
+    def context_usage_rate(self) -> float:
+        """Average fraction of retrieved context used by generation."""
+        if not self.results:
+            return 0.0
+        return sum(r.context_usage_rate for r in self.results) / self.count
+
+    @property
     def avg_response_time(self) -> float:
         """Average response time (seconds)."""
         if not self.results:
@@ -446,6 +537,9 @@ class AggregatedMetrics:
             "ndcg": round(self.ndcg, 4),
             "grounding_score": round(self.grounding_score, 4),
             "hallucination_rate": round(self.hallucination_rate, 4),
+            "answer_relevancy": round(self.answer_relevancy, 4),
+            "citation_coverage": round(self.citation_coverage, 4),
+            "context_usage_rate": round(self.context_usage_rate, 4),
             "avg_response_time_sec": round(self.avg_response_time, 3),
             "questions_successful": f"{self.successful}/{self.count}",
         }

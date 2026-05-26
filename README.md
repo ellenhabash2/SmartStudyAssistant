@@ -15,10 +15,13 @@ Students often need to review long PDFs, lecture notes, and technical readings q
 - PDF text extraction using PyMuPDF with pypdf fallback
 - Configurable document chunking with overlap
 - Mock embeddings for offline reproducible experiments
+- SentenceTransformers, BGE, E5, Hugging Face, and OpenAI embedding providers
 - Optional OpenAI embeddings when `OPENAI_API_KEY` is configured
-- In-memory cosine-similarity vector search
+- Pluggable vector stores: memory by default, FAISS, ChromaDB, and Qdrant support
+- Persistent vector indexes, metadata filtering, incremental updates, and deletion
+- Semantic, BM25, and hybrid retrieval with optional reranking
 - Retrieval service for Top-K context lookup
-- Simple QA service that builds answers from retrieved chunks
+- Simple QA service and grounded generation layer for citation-aware answers
 - CLI demo
 - Simple web UI for asking questions over PDFs in `data/`
 - Experiment runner for comparing RAG configurations
@@ -27,11 +30,11 @@ Students often need to review long PDFs, lecture notes, and technical readings q
 
 ## Current Implementation Status
 
-The system works as a prototype/MVP. The default configuration uses mock embeddings so the project can run without paid APIs or internet access after dependencies are installed. Mock embeddings are deterministic and useful for testing the pipeline, but they are not semantically strong.
+The system works as a research-oriented RAG platform. The default configuration still uses mock embeddings so smoke tests and demos can run without paid APIs or internet access after dependencies are installed. Real semantic embedding providers are available for stronger retrieval experiments.
 
-The current vector store is an in-memory cosine-similarity store. FAISS is a reasonable future improvement, but this version does not require FAISS to run.
+The default vector store is an in-memory cosine-similarity store with JSON persistence. FAISS, ChromaDB, and Qdrant backends are available through the same vector store interface; optional dependencies are loaded only when those backends are selected.
 
-Answers are currently based on retrieved chunks unless a future LLM generation layer is enabled. This makes the system useful for retrieval and grounding experiments, but the answers may read like excerpts rather than polished tutoring responses.
+Answers can run in two modes. The backward-compatible default returns retrieved chunks directly for retrieval experiments. The grounded generation mode builds citation-aware answers from retrieved evidence, uses a deterministic mock generator offline, and can use OpenAI when `OPENAI_API_KEY` is available.
 
 ## Architecture
 
@@ -54,7 +57,10 @@ VectorStoreService
 RetrievalService
         |
         v
-QA / Evaluation
+AnswerGenerator
+        |
+        v
+Citations / Evaluation
 ```
 
 ## How the RAG Pipeline Works
@@ -64,8 +70,8 @@ QA / Evaluation
 3. Each chunk is converted into an embedding vector.
 4. A question is embedded using the same embedding provider.
 5. The vector store retrieves the Top-K most similar chunks.
-6. The current QA layer returns an answer based on retrieved chunks.
-7. The experiment runner compares the generated answer and retrieved context against evaluation data.
+6. The generation layer either returns retrieved chunks or produces a grounded answer with citations.
+7. The experiment runner compares the generated answer, citations, and retrieved context against evaluation data.
 
 ## Project Structure
 
@@ -79,16 +85,35 @@ core/
 data/
   evaluation/              Local and benchmark notes
   example.pdf              Example source PDF
+embeddings/
+  providers.py             Mock, OpenAI, and SentenceTransformers providers
+retrieval/
+  hybrid.py                BM25 and weighted hybrid retrieval
+reranking/
+  rerankers.py             Heuristic and CrossEncoder rerankers
+generation/
+  base.py                  Generation data contracts
+  prompt_builder.py        Grounded prompt construction
+  citation_formatter.py    Source and page citation labels
+  answer_generator.py      Grounded answer orchestration
+  mock_llm.py              Deterministic offline LLM fallback
+  openai_llm.py            Optional OpenAI generation
 services/
   chunk_service.py         Text chunking
   dataset_loader.py        Local evaluation dataset loading
   ragbench_loader.py       Vectara Open RAG Benchmark loading
-  embedding_service.py     Mock/OpenAI embeddings
-  vector_store_service.py  In-memory vector search
+  embedding_service.py     Embedding service facade
+  vector_store_service.py  Backward-compatible default vector store
   retrieval_service.py     Query retrieval
   qa_service.py            Answer construction
   evaluation_service.py    Metrics
   experiment_runner.py     Experiment orchestration
+vectorstores/
+  factory.py               Vector store backend selection
+  memory.py                Persistent local JSON vector store
+  faiss_store.py           FAISS backend
+  chroma_store.py          ChromaDB backend
+  qdrant_store.py          Qdrant backend
 results/
   *.csv, *.md              Experiment outputs
 main_experiment.py         Experiment CLI
@@ -137,6 +162,59 @@ Run one local configuration:
 
 ```bash
 python main_experiment.py --dataset local --chunk-size 500 --top-k 3
+```
+
+Compare hybrid retrieval with reranking:
+
+```bash
+python main_experiment.py \
+  --dataset local \
+  --chunk-size 300 \
+  --top-k 3 \
+  --retrieval-mode hybrid \
+  --reranker heuristic
+```
+
+Use a persistent local vector index:
+
+```bash
+python main_experiment.py \
+  --dataset local \
+  --chunk-size 300 \
+  --top-k 3 \
+  --vector-store memory \
+  --vector-store-path .vectorstores/local_memory.json
+```
+
+Use FAISS for semantic search:
+
+```bash
+python main_experiment.py \
+  --dataset local \
+  --vector-store faiss \
+  --vector-store-path .vectorstores/local_faiss.pkl
+```
+
+Run grounded generation with citations:
+
+```bash
+python main_experiment.py \
+  --dataset local \
+  --chunk-size 300 \
+  --top-k 3 \
+  --generation-mode grounded \
+  --llm-provider mock \
+  --show-citations
+```
+
+Use OpenAI generation when `OPENAI_API_KEY` is configured:
+
+```bash
+python main_experiment.py \
+  --dataset local \
+  --generation-mode grounded \
+  --llm-provider openai \
+  --show-citations
 ```
 
 Results are written to:
@@ -193,37 +271,64 @@ The benchmark includes PDF-derived scientific content, question-answer pairs, do
 
 - **Accuracy**: token-level F1 overlap between generated and expected answer
 - **Precision@K**: how often retrieved chunks contain the expected source text
+- **Recall@K**: whether any top-K chunk contains the expected source text
+- **MRR**: how highly the first relevant chunk is ranked
+- **NDCG**: ranking quality using binary relevance labels
 - **Grounding score**: how much of the generated answer appears in retrieved context
+- **Hallucination rate**: estimated ungrounded answer-token rate
+- **Answer relevancy**: placeholder lexical overlap between question and answer
+- **Citation coverage**: how many used evidence chunks are cited
+- **Context usage rate**: how much of the retrieved context the generator used
 - **Response time**: how long retrieval and answer construction took
+
+## Grounded Generation
+
+The old answer path is still available as `--generation-mode retrieved_chunks`. It is useful for pure retrieval benchmarking because the answer is just the retrieved evidence.
+
+The new `--generation-mode grounded` path adds a modular generation layer:
+
+- Builds a grounded prompt from the question and retrieved chunks
+- Tracks chunk IDs, source IDs, page numbers, retrieval scores, and metadata
+- Produces answer text, citations, used chunk IDs, confidence, and weak-context warnings
+- Falls back to deterministic mock generation when no API key is available
+- Uses OpenAI only when `--llm-provider openai` and `OPENAI_API_KEY` are both present
+
+Before this phase, answers were mostly raw chunks. After this phase, experiments can compare raw retrieval against citation-aware grounded answers while preserving reproducibility.
 
 ## What Works
 
 - End-to-end PDF question answering prototype
 - Offline experiments with mock embeddings
-- Optional OpenAI embedding support
+- Optional OpenAI and local SentenceTransformers embedding support
+- Multiple chunking strategies: recursive, sentence, token-aware, sliding window, semantic, parent-child
+- Multiple vector store backends: memory, FAISS, ChromaDB, Qdrant
+- Metadata filtering, persistence, incremental updates, and deletion in the vector store layer
+- Semantic, BM25, and hybrid retrieval with optional heuristic reranking
+- Grounded generation with citations, confidence, and weak-context warnings
+- Optional OpenAI generation with deterministic mock fallback
 - Robust local evaluation loading that skips malformed records
 - RAGBench loading through Hugging Face or local downloaded files
 - Per-question CSV experiment outputs
 - Markdown summaries for reports
+- Unit tests for the vector store contract and grounded generation behavior
 
 ## Current Limitations
 
-- Mock embeddings are not a replacement for real semantic embeddings
-- The vector store is in-memory and intended for small experiments
-- Answers are currently retrieved-context based, not full LLM-generated tutoring answers
+- Mock embeddings are useful for smoke tests but not a replacement for real semantic embeddings
+- ChromaDB and Qdrant wrappers require optional packages and are not exercised by default smoke tests
+- OpenAI generation is optional and depends on `OPENAI_API_KEY`; offline runs use deterministic mock generation
 - RAGBench contains multimodal data, but this prototype primarily evaluates text/table text
 - Hugging Face dataset loading requires internet access unless the dataset is already downloaded
 - Large RAGBench runs can be slow because this MVP rebuilds embeddings for each configuration
 
 ## Future Improvements
 
-- Add FAISS or another persistent vector database
-- Add an LLM generation step for natural answers
-- Improve citation support with document IDs and section metadata
+- Add streaming LLM responses and richer prompt templates
+- Improve citation UX in the web interface
 - Add multimodal handling for RAGBench images
-- Cache embeddings between experiment runs
 - Add stronger semantic metrics such as BERTScore or LLM-as-judge evaluation
-- Add automated tests for loaders, metrics, and experiment output formats
+- Add Streamlit benchmark dashboard and retrieval visualizations
+- Add automated tests for loaders, metrics, generation, and experiment output formats
 
 ## Example Commands
 
@@ -232,6 +337,9 @@ python app/main.py
 python app/web.py
 python main_experiment.py --dataset local
 python main_experiment.py --dataset local --chunk-size 300 --top-k 5
+python main_experiment.py --dataset local --retrieval-mode hybrid --reranker heuristic
+python main_experiment.py --dataset local --generation-mode grounded --llm-provider mock --show-citations
+python main_experiment.py --dataset local --vector-store faiss --vector-store-path .vectorstores/local_faiss.pkl
 python main_experiment.py --dataset ragbench --limit 10
 python main_experiment.py --dataset ragbench --limit 50 --embedding-provider openai
 ```

@@ -1,5 +1,10 @@
+chromadb
 datasets
+faiss-cpu
 huggingface_hub
+numpy
 openai
 PyMuPDF
 pypdf
+qdrant-client
+sentence-transformers

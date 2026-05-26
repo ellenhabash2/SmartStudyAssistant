@@ -48,6 +48,11 @@ def define_experiments(
     chunking_strategy: str = "recursive",
     retrieval_mode: str = "semantic",
     reranker: str | None = None,
+    vector_store: str = "memory",
+    vector_store_path: str | None = None,
+    generation_mode: str = "retrieved_chunks",
+    llm_provider: str = "mock",
+    show_citations: bool = False,
 ) -> List[ExperimentConfig]:
     """
     Define configurations to test.
@@ -69,6 +74,11 @@ def define_experiments(
                 chunking_strategy=chunking_strategy,
                 retrieval_mode=retrieval_mode,
                 reranker=reranker,
+                vector_store=vector_store,
+                vector_store_path=vector_store_path,
+                generation_mode=generation_mode,
+                llm_provider=llm_provider,
+                show_citations=show_citations,
                 answer_mode="retrieved_chunks",
             )
         ]
@@ -83,6 +93,11 @@ def define_experiments(
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
             reranker=reranker,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode=generation_mode,
+            llm_provider=llm_provider,
+            show_citations=show_citations,
             answer_mode="retrieved_chunks",
         ),
 
@@ -96,6 +111,11 @@ def define_experiments(
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
             reranker=reranker,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode=generation_mode,
+            llm_provider=llm_provider,
+            show_citations=show_citations,
             answer_mode="retrieved_chunks",
         ),
         # Large chunks: More context
@@ -107,6 +127,11 @@ def define_experiments(
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
             reranker=reranker,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode=generation_mode,
+            llm_provider=llm_provider,
+            show_citations=show_citations,
             answer_mode="retrieved_chunks",
         ),
 
@@ -120,6 +145,11 @@ def define_experiments(
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
             reranker=reranker,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode=generation_mode,
+            llm_provider=llm_provider,
+            show_citations=show_citations,
             answer_mode="retrieved_chunks",
         ),
         # Deep retrieval
@@ -131,6 +161,11 @@ def define_experiments(
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
             reranker=reranker,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode=generation_mode,
+            llm_provider=llm_provider,
+            show_citations=show_citations,
             answer_mode="retrieved_chunks",
         ),
 
@@ -144,6 +179,11 @@ def define_experiments(
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
             reranker=reranker,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode=generation_mode,
+            llm_provider=llm_provider,
+            show_citations=show_citations,
             answer_mode="retrieved_chunks",
         ),
         # Large chunks + shallow retrieval (fastest)
@@ -155,6 +195,11 @@ def define_experiments(
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
             reranker=reranker,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode=generation_mode,
+            llm_provider=llm_provider,
+            show_citations=show_citations,
             answer_mode="retrieved_chunks",
         ),
 
@@ -167,6 +212,11 @@ def define_experiments(
             embedding_provider=embedding_provider,
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode="retrieved_chunks",
+            llm_provider=llm_provider,
+            show_citations=False,
             answer_mode="baseline",
             baseline_method="keyword_overlap",
         ),
@@ -178,6 +228,11 @@ def define_experiments(
             embedding_provider=embedding_provider,
             chunking_strategy=chunking_strategy,
             retrieval_mode=retrieval_mode,
+            vector_store=vector_store,
+            vector_store_path=vector_store_path,
+            generation_mode="retrieved_chunks",
+            llm_provider=llm_provider,
+            show_citations=False,
             answer_mode="baseline",
             baseline_method="random",
         ),
@@ -210,8 +265,15 @@ def save_results_to_csv(
         "expected_answer",
         "generated_answer",
         "precision_at_k",
+        "recall_at_k",
+        "mrr",
+        "ndcg",
         "accuracy",
         "grounding_score",
+        "hallucination_rate",
+        "answer_relevancy",
+        "citation_coverage",
+        "context_usage_rate",
         "response_time",
         "chunk_size",
         "top_k",
@@ -219,6 +281,11 @@ def save_results_to_csv(
         "chunking_strategy",
         "retrieval_mode",
         "reranker",
+        "vector_store",
+        "generation_mode",
+        "llm_provider",
+        "used_chunk_ids",
+        "cited_chunk_ids",
         "retrieval_method",
         "chunk_overlap",
         "num_chunks",
@@ -238,8 +305,15 @@ def save_results_to_csv(
                         "expected_answer": evaluation.ground_truth_answer,
                         "generated_answer": evaluation.generated_answer,
                         "precision_at_k": round(evaluation.precision_at_k, 4),
+                        "recall_at_k": round(evaluation.recall_at_k, 4),
+                        "mrr": round(evaluation.mrr, 4),
+                        "ndcg": round(evaluation.ndcg, 4),
                         "accuracy": round(evaluation.accuracy, 4),
                         "grounding_score": round(evaluation.grounding_score, 4),
+                        "hallucination_rate": round(evaluation.hallucination_rate, 4),
+                        "answer_relevancy": round(evaluation.answer_relevancy, 4),
+                        "citation_coverage": round(evaluation.citation_coverage, 4),
+                        "context_usage_rate": round(evaluation.context_usage_rate, 4),
                         "response_time": round(evaluation.response_time, 4),
                         "chunk_size": config.chunk_size,
                         "top_k": config.top_k,
@@ -247,6 +321,11 @@ def save_results_to_csv(
                         "chunking_strategy": config.chunking_strategy,
                         "retrieval_mode": config.retrieval_mode,
                         "reranker": config.reranker or "",
+                        "vector_store": config.vector_store,
+                        "generation_mode": config.generation_mode,
+                        "llm_provider": config.llm_provider,
+                        "used_chunk_ids": " ".join(evaluation.used_chunk_ids),
+                        "cited_chunk_ids": " ".join(evaluation.cited_chunk_ids),
                         "retrieval_method": result.retrieval_method(),
                         "chunk_overlap": config.chunk_overlap,
                         "num_chunks": result.num_chunks,
@@ -284,23 +363,27 @@ def save_results_to_markdown(
     lines.append(f"- **Dataset**: {dataset_name}\n")
     if question_count is not None:
         lines.append(f"- **Evaluation questions**: {question_count}\n")
-    lines.append("- **Vector store**: in-memory cosine similarity\n")
+    vector_stores = ", ".join(sorted({result.config.vector_store for result in results}))
+    lines.append(f"- **Vector store backend(s)**: {vector_stores or 'memory'}\n")
     lines.append("- **Retrieval options**: semantic, BM25, hybrid fusion, optional reranking\n")
+    generation_modes = ", ".join(sorted({result.config.generation_mode for result in results}))
+    lines.append(f"- **Generation mode(s)**: {generation_modes or 'retrieved_chunks'}\n")
 
     # Results table
     lines.append("\n## Results by Configuration\n")
-    lines.append("| Chunk Size | Strategy | Retrieval | Top-K | Accuracy | Precision@K | Recall@K | MRR | NDCG | Grounding | Hallucination | Resp. Time (ms) | Num Chunks |\n")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+    lines.append("| Chunk Size | Strategy | Vector Store | Retrieval | Generation | Top-K | Accuracy | Precision@K | Recall@K | MRR | NDCG | Grounding | Hallucination | Citation Cov. | Ctx Use | Resp. Time (ms) | Num Chunks |\n")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 
     for result in results:
         config = result.config
         metrics = result.aggregated_metrics
 
         lines.append(
-            f"| {config.chunk_size} | {config.chunking_strategy} | {result.retrieval_method()} | {config.top_k} | "
+            f"| {config.chunk_size} | {config.chunking_strategy} | {config.vector_store} | {result.retrieval_method()} | {config.generation_mode} | {config.top_k} | "
             f"{metrics.accuracy:.3f} | {metrics.precision_at_k:.3f} | "
             f"{metrics.recall_at_k:.3f} | {metrics.mrr:.3f} | {metrics.ndcg:.3f} | "
             f"{metrics.grounding_score:.3f} | {metrics.hallucination_rate:.3f} | "
+            f"{metrics.citation_coverage:.3f} | {metrics.context_usage_rate:.3f} | "
             f"{metrics.avg_response_time*1000:.1f} | "
             f"{result.num_chunks} |\n"
         )
@@ -323,6 +406,12 @@ def save_results_to_markdown(
         overall_hallucination = sum(
             result.aggregated_metrics.hallucination_rate for result in results
         ) / len(results)
+        overall_citation_coverage = sum(
+            result.aggregated_metrics.citation_coverage for result in results
+        ) / len(results)
+        overall_context_usage = sum(
+            result.aggregated_metrics.context_usage_rate for result in results
+        ) / len(results)
         overall_time = sum(
             result.aggregated_metrics.avg_response_time for result in results
         ) / len(results)
@@ -334,6 +423,8 @@ def save_results_to_markdown(
         lines.append(f"- **Average Recall@K**: {overall_recall:.3f}\n")
         lines.append(f"- **Average grounding score**: {overall_grounding:.3f}\n")
         lines.append(f"- **Average hallucination rate**: {overall_hallucination:.3f}\n")
+        lines.append(f"- **Average citation coverage**: {overall_citation_coverage:.3f}\n")
+        lines.append(f"- **Average context usage rate**: {overall_context_usage:.3f}\n")
         lines.append(f"- **Average response time**: {overall_time*1000:.1f} ms\n")
         lines.append(f"- **Question-level errors**: {total_errors}\n")
 
@@ -429,6 +520,8 @@ def print_results_table(results: List) -> None:
         method = config.answer_mode
         if config.baseline_method:
             method = f"baseline:{config.baseline_method}"
+        elif config.generation_mode == "grounded":
+            method = f"grounded:{config.llm_provider}"
 
         print(
             f"{config.chunk_size:<8} {config.chunk_overlap:<8} {config.top_k:<6} "
@@ -514,6 +607,34 @@ def parse_args():
         default="none",
         help="Optional reranker for hybrid retrieval experiments.",
     )
+    parser.add_argument(
+        "--vector-store",
+        choices=["memory", "faiss", "chroma", "qdrant"],
+        default="memory",
+        help="Vector database backend to use.",
+    )
+    parser.add_argument(
+        "--vector-store-path",
+        default=None,
+        help="Optional persistence path for the selected vector store.",
+    )
+    parser.add_argument(
+        "--generation-mode",
+        choices=["retrieved_chunks", "grounded"],
+        default="retrieved_chunks",
+        help="Answer generation mode.",
+    )
+    parser.add_argument(
+        "--llm-provider",
+        choices=["mock", "openai"],
+        default="mock",
+        help="LLM provider for grounded generation.",
+    )
+    parser.add_argument(
+        "--show-citations",
+        action="store_true",
+        help="Append citation markers and source list to grounded answers.",
+    )
     return parser.parse_args()
 
 
@@ -565,6 +686,11 @@ def main():
         chunking_strategy=args.chunking_strategy,
         retrieval_mode=args.retrieval_mode,
         reranker=None if args.reranker == "none" else args.reranker,
+        vector_store=args.vector_store,
+        vector_store_path=args.vector_store_path,
+        generation_mode=args.generation_mode,
+        llm_provider=args.llm_provider,
+        show_citations=args.show_citations,
     )
     print(f"   {len(configs)} configurations defined")
 

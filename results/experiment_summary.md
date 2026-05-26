@@ -3,33 +3,36 @@
 - **Total configurations tested**: 1
 - **Dataset**: local
 - **Evaluation questions**: 10
-- **Vector store**: in-memory cosine similarity
+- **Vector store backend(s)**: memory
 - **Retrieval options**: semantic, BM25, hybrid fusion, optional reranking
+- **Generation mode(s)**: grounded
 
 ## Results by Configuration
-| Chunk Size | Strategy | Retrieval | Top-K | Accuracy | Precision@K | Recall@K | MRR | NDCG | Grounding | Hallucination | Resp. Time (ms) | Num Chunks |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 300 | recursive | hybrid+rerank:heuristic | 3 | 0.134 | 0.000 | 0.000 | 0.000 | 0.000 | 1.000 | 0.000 | 2.0 | 65 |
+| Chunk Size | Strategy | Vector Store | Retrieval | Generation | Top-K | Accuracy | Precision@K | Recall@K | MRR | NDCG | Grounding | Hallucination | Citation Cov. | Ctx Use | Resp. Time (ms) | Num Chunks |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 300 | recursive | memory | semantic | grounded | 3 | 0.092 | 0.000 | 0.000 | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 | 1.000 | 1.5 | 65 |
 
 ## Aggregate Metrics
 - **Evaluated question/configuration pairs**: 10
-- **Average accuracy**: 0.134
+- **Average accuracy**: 0.092
 - **Average Precision@K**: 0.000
 - **Average Recall@K**: 0.000
 - **Average grounding score**: 1.000
 - **Average hallucination rate**: 0.000
-- **Average response time**: 2.0 ms
+- **Average citation coverage**: 1.000
+- **Average context usage rate**: 1.000
+- **Average response time**: 1.5 ms
 - **Question-level errors**: 0
 
 ## Key Findings
-**Best Accuracy**: chunk_size=300, overlap=30, top_k=3, provider=mock, chunking=recursive, retrieval=hybrid
-- Accuracy: 0.134
+**Best Accuracy**: chunk_size=300, overlap=30, top_k=3, provider=mock, chunking=recursive, retrieval=semantic, vector_store=memory, generation=grounded
+- Accuracy: 0.092
 
-**Best Grounding**: chunk_size=300, overlap=30, top_k=3, provider=mock, chunking=recursive, retrieval=hybrid
+**Best Grounding**: chunk_size=300, overlap=30, top_k=3, provider=mock, chunking=recursive, retrieval=semantic, vector_store=memory, generation=grounded
 - Grounding Score: 1.000
 
-**Fastest**: chunk_size=300, overlap=30, top_k=3, provider=mock, chunking=recursive, retrieval=hybrid
-- Response Time: 2.0ms
+**Fastest**: chunk_size=300, overlap=30, top_k=3, provider=mock, chunking=recursive, retrieval=semantic, vector_store=memory, generation=grounded
+- Response Time: 1.5ms
 
 ## Analysis & Recommendations
 ### Chunk Size Impact
