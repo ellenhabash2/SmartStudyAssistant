@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional
 import json
+import math
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,11 @@ class EvaluationResult:
     question: str
     accuracy: float
     precision_at_k: float
+    recall_at_k: float
+    mrr: float
+    ndcg: float
     grounding_score: float
+    hallucination_rate: float
     response_time: float
     retrieved_chunks: List[str]
     generated_answer: str
@@ -138,6 +143,85 @@ class EvaluationService:
         return min(precision, 1.0)
 
     @staticmethod
+    def calculate_relevance_vector(
+        retrieved_chunks: List[str],
+        expected_source_text: str,
+        k: Optional[int] = None,
+    ) -> list[int]:
+        """Binary relevance labels for retrieved chunks."""
+        if not retrieved_chunks or not expected_source_text:
+            return [0 for _ in retrieved_chunks[:k]]
+        if k is None:
+            k = len(retrieved_chunks)
+        source_lower = expected_source_text.lower()
+        return [
+            1 if source_lower in chunk.lower() else 0
+            for chunk in retrieved_chunks[:k]
+        ]
+
+    @staticmethod
+    def calculate_recall_at_k(
+        retrieved_chunks: List[str],
+        expected_source_text: str,
+        k: Optional[int] = None,
+    ) -> float:
+        """
+        Recall@K for single-source QA labels.
+
+        With one expected source span, recall is 1 when any top-K chunk contains
+        the source and 0 otherwise. This is intentionally simple and compatible
+        with the current local and RAGBench normalization.
+        """
+        relevance = EvaluationService.calculate_relevance_vector(
+            retrieved_chunks,
+            expected_source_text,
+            k,
+        )
+        return 1.0 if any(relevance) else 0.0
+
+    @staticmethod
+    def calculate_mrr(
+        retrieved_chunks: List[str],
+        expected_source_text: str,
+        k: Optional[int] = None,
+    ) -> float:
+        """Mean reciprocal rank for the first relevant retrieved chunk."""
+        relevance = EvaluationService.calculate_relevance_vector(
+            retrieved_chunks,
+            expected_source_text,
+            k,
+        )
+        for index, is_relevant in enumerate(relevance, 1):
+            if is_relevant:
+                return 1.0 / index
+        return 0.0
+
+    @staticmethod
+    def calculate_ndcg(
+        retrieved_chunks: List[str],
+        expected_source_text: str,
+        k: Optional[int] = None,
+    ) -> float:
+        """NDCG@K for binary source relevance labels."""
+        relevance = EvaluationService.calculate_relevance_vector(
+            retrieved_chunks,
+            expected_source_text,
+            k,
+        )
+        if not relevance:
+            return 0.0
+        dcg = sum(
+            rel / math.log2(index + 1)
+            for index, rel in enumerate(relevance, 1)
+        )
+        ideal = sorted(relevance, reverse=True)
+        idcg = sum(
+            rel / math.log2(index + 1)
+            for index, rel in enumerate(ideal, 1)
+        )
+        return dcg / idcg if idcg else 0.0
+
+    @staticmethod
     def calculate_grounding_score(
         answer: str,
         retrieved_context: List[str],
@@ -238,12 +322,25 @@ class EvaluationService:
             grounding = EvaluationService.calculate_grounding_score(
                 generated_answer, retrieved_chunks
             )
+            recall_at_k = EvaluationService.calculate_recall_at_k(
+                retrieved_chunks, expected_source_text
+            )
+            mrr = EvaluationService.calculate_mrr(
+                retrieved_chunks, expected_source_text
+            )
+            ndcg = EvaluationService.calculate_ndcg(
+                retrieved_chunks, expected_source_text
+            )
 
             return EvaluationResult(
                 question=question,
                 accuracy=accuracy,
                 precision_at_k=precision_at_k,
+                recall_at_k=recall_at_k,
+                mrr=mrr,
+                ndcg=ndcg,
                 grounding_score=grounding,
+                hallucination_rate=max(0.0, 1.0 - grounding),
                 response_time=response_time,
                 retrieved_chunks=retrieved_chunks,
                 generated_answer=generated_answer,
@@ -256,7 +353,11 @@ class EvaluationService:
                 question=question,
                 accuracy=0.0,
                 precision_at_k=0.0,
+                recall_at_k=0.0,
+                mrr=0.0,
+                ndcg=0.0,
                 grounding_score=0.0,
+                hallucination_rate=1.0,
                 response_time=response_time,
                 retrieved_chunks=[],
                 generated_answer=generated_answer,
@@ -294,11 +395,39 @@ class AggregatedMetrics:
         return sum(r.precision_at_k for r in self.results) / self.count
 
     @property
+    def recall_at_k(self) -> float:
+        """Average Recall@K."""
+        if not self.results:
+            return 0.0
+        return sum(r.recall_at_k for r in self.results) / self.count
+
+    @property
+    def mrr(self) -> float:
+        """Average mean reciprocal rank."""
+        if not self.results:
+            return 0.0
+        return sum(r.mrr for r in self.results) / self.count
+
+    @property
+    def ndcg(self) -> float:
+        """Average NDCG."""
+        if not self.results:
+            return 0.0
+        return sum(r.ndcg for r in self.results) / self.count
+
+    @property
     def grounding_score(self) -> float:
         """Average grounding score."""
         if not self.results:
             return 0.0
         return sum(r.grounding_score for r in self.results) / self.count
+
+    @property
+    def hallucination_rate(self) -> float:
+        """Average ungrounded answer-token rate."""
+        if not self.results:
+            return 0.0
+        return sum(r.hallucination_rate for r in self.results) / self.count
 
     @property
     def avg_response_time(self) -> float:
@@ -312,7 +441,11 @@ class AggregatedMetrics:
         return {
             "accuracy": round(self.accuracy, 4),
             "precision_at_k": round(self.precision_at_k, 4),
+            "recall_at_k": round(self.recall_at_k, 4),
+            "mrr": round(self.mrr, 4),
+            "ndcg": round(self.ndcg, 4),
             "grounding_score": round(self.grounding_score, 4),
+            "hallucination_rate": round(self.hallucination_rate, 4),
             "avg_response_time_sec": round(self.avg_response_time, 3),
             "questions_successful": f"{self.successful}/{self.count}",
         }

@@ -3,6 +3,8 @@ from typing import List
 
 from services.embedding_service import EmbeddingService, EmbeddingError
 from services.vector_store_service import SearchResult, VectorStoreService
+from retrieval.hybrid import BM25Retriever, HybridRetriever
+from reranking.rerankers import BaseReranker
 
 
 class RetrievalError(Exception):
@@ -33,9 +35,23 @@ class RetrievalService:
         self,
         embedding_service: EmbeddingService,
         vector_store: VectorStoreService,
+        chunks: list | None = None,
+        retrieval_mode: str = "semantic",
+        reranker: BaseReranker | None = None,
+        semantic_weight: float = 0.65,
+        keyword_weight: float = 0.35,
     ):
         self.embedding_service = embedding_service
         self.vector_store = vector_store
+        self.retrieval_mode = retrieval_mode
+        self.reranker = reranker
+        self.bm25_retriever = BM25Retriever(chunks or getattr(vector_store, "chunks", []))
+        self.hybrid_retriever = HybridRetriever(
+            vector_store=vector_store,
+            bm25_retriever=self.bm25_retriever,
+            semantic_weight=semantic_weight,
+            keyword_weight=keyword_weight,
+        )
 
     def retrieve(self, query: str, top_k: int = 3) -> RetrievalResponse:
         """
@@ -57,7 +73,29 @@ class RetrievalService:
 
         try:
             query_vector = self.embedding_service.embed_query(query)
-            results = self.vector_store.search(query_vector, top_k=top_k)
+            mode = (self.retrieval_mode or "semantic").lower()
+            if mode == "semantic":
+                results = self.vector_store.search(query_vector, top_k=top_k)
+            elif mode == "bm25":
+                results = [
+                    SearchResult(chunk=item.chunk, score=item.score)
+                    for item in self.bm25_retriever.search(query, top_k=top_k)
+                ]
+            elif mode == "hybrid":
+                candidate_k = max(top_k * 4, top_k)
+                hybrid_results = self.hybrid_retriever.search(
+                    query_vector=query_vector,
+                    query=query,
+                    top_k=candidate_k if self.reranker else top_k,
+                )
+                if self.reranker:
+                    hybrid_results = self.reranker.rerank(query, hybrid_results, top_k=top_k)
+                results = [
+                    SearchResult(chunk=item.chunk, score=item.score)
+                    for item in hybrid_results[:top_k]
+                ]
+            else:
+                raise RetrievalError(f"Unsupported retrieval mode: {self.retrieval_mode}")
             return RetrievalResponse(query=query, results=results)
         except EmbeddingError as e:
             raise RetrievalError(f"Failed to embed query: {e}") from e

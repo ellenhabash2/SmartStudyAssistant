@@ -24,6 +24,11 @@ class VectorStoreService:
         self._chunks: List[DocumentChunk] = []
         self._vectors: List[List[float]] = []
 
+    @property
+    def chunks(self) -> List[DocumentChunk]:
+        """Expose indexed chunks for hybrid retrieval diagnostics."""
+        return self._chunks.copy()
+
     def add(self, chunks: List[DocumentChunk], embeddings: List[EmbeddingResult]) -> None:
         """
         Store chunks and their corresponding embeddings.

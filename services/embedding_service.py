@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from core.config import EMBEDDING_MODEL, EMBEDDING_PROVIDER, MOCK_EMBEDDING_DIM
+from embeddings.providers import EmbeddingProviderError, EmbeddingProviderRegistry
 
 
 class EmbeddingError(Exception):
@@ -30,9 +32,27 @@ class EmbeddingService:
     - OpenAI embeddings for real semantic search
     """
 
-    def __init__(self, provider: str = EMBEDDING_PROVIDER, model: str = EMBEDDING_MODEL):
+    def __init__(
+        self,
+        provider: str = EMBEDDING_PROVIDER,
+        model: str = EMBEDDING_MODEL,
+        batch_size: int = 32,
+        cache_enabled: bool = True,
+        cache_path: str = ".cache/embeddings.sqlite3",
+    ):
         self.provider = provider
         self.model = model
+        self.batch_size = batch_size
+        try:
+            self._provider = EmbeddingProviderRegistry.create(
+                provider=provider,
+                model=model,
+                cache_enabled=cache_enabled,
+                cache_path=cache_path,
+            )
+            self.model = self._provider.model_name
+        except EmbeddingProviderError as e:
+            raise EmbeddingError(str(e)) from e
 
     def embed_texts(self, chunks: list) -> list[EmbeddingResult]:
         """
@@ -44,18 +64,17 @@ class EmbeddingService:
         Raises:
             EmbeddingError: If embedding generation fails.
         """
-        results: list[EmbeddingResult] = []
-
-        for chunk in chunks:
-            vector = self._embed_text(chunk.text)
-            results.append(
-                EmbeddingResult(
-                    chunk_id=chunk.chunk_id,
-                    vector=vector,
-                )
+        try:
+            vectors = self._provider.embed_texts(
+                [chunk.text for chunk in chunks],
+                batch_size=self.batch_size,
             )
-
-        return results
+            return [
+                EmbeddingResult(chunk_id=chunk.chunk_id, vector=vector)
+                for chunk, vector in zip(chunks, vectors)
+            ]
+        except EmbeddingProviderError as e:
+            raise EmbeddingError(str(e)) from e
 
     def embed_query(self, query: str) -> list[float]:
         """
@@ -71,7 +90,38 @@ class EmbeddingService:
         if not query:
             raise EmbeddingError("Query cannot be empty.")
 
-        return self._embed_text(query)
+        try:
+            return self._provider.embed_query(query)
+        except EmbeddingProviderError as e:
+            raise EmbeddingError(str(e)) from e
+
+    async def aembed_texts(self, chunks: list) -> list[EmbeddingResult]:
+        """Async version of embed_texts for ingestion pipelines and dashboards."""
+        try:
+            vectors = await self._provider.aembed_texts(
+                [chunk.text for chunk in chunks],
+                batch_size=self.batch_size,
+            )
+            return [
+                EmbeddingResult(chunk_id=chunk.chunk_id, vector=vector)
+                for chunk, vector in zip(chunks, vectors)
+            ]
+        except AttributeError:
+            return await asyncio.to_thread(self.embed_texts, chunks)
+        except EmbeddingProviderError as e:
+            raise EmbeddingError(str(e)) from e
+
+    async def aembed_query(self, query: str) -> list[float]:
+        """Async version of embed_query."""
+        query = (query or "").strip()
+        if not query:
+            raise EmbeddingError("Query cannot be empty.")
+        try:
+            return await self._provider.aembed_query(query)
+        except AttributeError:
+            return await asyncio.to_thread(self.embed_query, query)
+        except EmbeddingProviderError as e:
+            raise EmbeddingError(str(e)) from e
 
     def _embed_text(self, text: str) -> list[float]:
         """
