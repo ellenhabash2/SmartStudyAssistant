@@ -30,7 +30,6 @@ from reranking.rerankers import HeuristicReranker
 from vectorstores.factory import VectorStoreFactory
 from generation.answer_generator import AnswerGenerator
 
-
 @dataclass
 class ExperimentConfig:
     """Configuration for a single experiment."""
@@ -395,6 +394,7 @@ class ExperimentRunner:
             cited_chunk_ids = [citation.chunk_id for citation in generation_result.citations]
         elif retrieved_chunks:
             generated_answer = "\n".join(retrieved_chunks)
+
         else:
             generated_answer = ""
 
