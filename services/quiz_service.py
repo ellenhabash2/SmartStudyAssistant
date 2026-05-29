@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import random
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from core.models import DocumentChunk
 
@@ -14,6 +13,9 @@ class QuizQuestion:
     options: List[str]
     answer: str
     explanation: Optional[str] = None
+    citation: Optional[str] = None
+    source: Optional[str] = None
+    page: Optional[int] = None
 
 
 class QuizService:
@@ -39,53 +41,112 @@ class QuizService:
 
     @staticmethod
     def _build_options(correct: str, pool: List[str], num_options: int = 4) -> List[str]:
-        options = {correct}
-        pool = [w for w in pool if w.lower() != correct.lower() and len(w) > 3]
-        random.shuffle(pool)
+        options = [correct]
+        seen = {correct.lower()}
         for candidate in pool:
+            normalized = candidate.lower()
+            if normalized in seen or len(candidate) <= 3:
+                continue
+            seen.add(normalized)
+            options.append(candidate)
             if len(options) >= num_options:
                 break
-            options.add(candidate)
-        options_list = list(options)
-        random.shuffle(options_list)
-        return options_list
+        fallback_terms = ["analysis", "document", "concept", "process", "method", "record"]
+        for fallback in fallback_terms:
+            if len(options) >= num_options:
+                break
+            if fallback.lower() in seen:
+                continue
+            seen.add(fallback.lower())
+            options.append(fallback)
+        return options
+
+    @staticmethod
+    def _extract_doc_data(item: Any) -> dict[str, Any]:
+        if isinstance(item, DocumentChunk):
+            return {
+                "text": item.text,
+                "source": "Uploaded PDF",
+                "page": item.page_number,
+            }
+
+        if isinstance(item, dict):
+            return {
+                "text": item.get("text", ""),
+                "source": item.get("source", "Uploaded PDF"),
+                "page": item.get("page"),
+            }
+
+        metadata = dict(getattr(item, "metadata", {}) or {})
+        return {
+            "text": getattr(item, "page_content", ""),
+            "source": metadata.get("source", "Uploaded PDF"),
+            "page": metadata.get("page"),
+        }
 
     @classmethod
     def generate_mcq(cls, chunks: List[DocumentChunk], num_questions: int = 3) -> List[QuizQuestion]:
-        """Generate simple multiple-choice questions from document text."""
-        sentences = []
-        for chunk in chunks:
-            sentences.extend(cls._split_sentences(chunk.text))
+        """Generate simple multiple-choice questions from legacy chunk objects."""
+        return cls.generate_from_documents(chunks, num_questions=num_questions)
 
-        candidates = [s for s in sentences if len(s.split()) >= 8]
-        if not candidates:
+    @classmethod
+    def generate_from_documents(cls, documents: List[Any], num_questions: int = 3) -> List[QuizQuestion]:
+        """Generate deterministic fill-in-the-blank questions with citations."""
+        sentence_rows: List[dict[str, Any]] = []
+        for item in documents:
+            doc_data = cls._extract_doc_data(item)
+            for sentence in cls._split_sentences(doc_data["text"]):
+                if len(sentence.split()) < 8:
+                    continue
+                sentence_rows.append(
+                    {
+                        "sentence": sentence,
+                        "source": doc_data["source"],
+                        "page": doc_data["page"],
+                    }
+                )
+
+        if not sentence_rows:
             return []
 
-        all_keywords = []
-        for sentence in candidates:
-            keyword = cls._select_keyword(sentence)
+        keyword_pool: List[str] = []
+        for row in sentence_rows:
+            keyword = cls._select_keyword(row["sentence"])
             if keyword:
-                all_keywords.append(keyword)
+                keyword_pool.append(keyword)
 
         questions: List[QuizQuestion] = []
-        for sentence in random.sample(candidates, min(num_questions, len(candidates))):
+        seen_prompts = set()
+        for row in sentence_rows:
+            sentence = row["sentence"]
             keyword = cls._select_keyword(sentence)
             if not keyword:
                 continue
 
-            question_text = sentence.replace(keyword, "_____", 1)
-            options = cls._build_options(keyword, all_keywords, num_options=4)
+            prompt = f"Fill in the blank: {sentence.replace(keyword, '_____', 1)}"
+            if prompt in seen_prompts:
+                continue
+
+            options = cls._build_options(keyword, keyword_pool, num_options=4)
             if len(options) < 2:
                 continue
 
+            page = row["page"]
+            source = row["source"] or "Uploaded PDF"
+            citation = f"{source} p.{page}" if page else source
+
             questions.append(
                 QuizQuestion(
-                    prompt=f"Fill in the blank: {question_text}",
+                    prompt=prompt,
                     options=options,
                     answer=keyword,
                     explanation=f"The correct answer is '{keyword}'.",
+                    citation=citation,
+                    source=source,
+                    page=page,
                 )
             )
+            seen_prompts.add(prompt)
 
             if len(questions) >= num_questions:
                 break

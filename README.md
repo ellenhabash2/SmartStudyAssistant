@@ -1,73 +1,80 @@
 # Smart Study Assistant — RAG Platform
 
-A clean, stable Retrieval-Augmented Generation (RAG) application for PDF study support.
+Smart Study Assistant is a clean, demo-ready PDF question answering app with a LangChain-based RAG pipeline.
 
-## What this app does
+## What the app does
 - Upload a PDF document
-- Extract text and chunk the content
-- Build a lightweight semantic vector store
-- Answer questions using retrieved document context
-- Generate simple multiple-choice quiz prompts
-- Display extracted text for review
-- Run a local benchmark to verify retrieval quality
+- Load document pages with LangChain
+- Split text with `RecursiveCharacterTextSplitter`
+- Create semantic embeddings with `sentence-transformers/all-MiniLM-L6-v2`
+- Store vectors in FAISS
+- Retrieve grounded context for question answering
+- Return answers with citations
+- Generate simple document-based quiz questions
 
-## Main features
-- PDF upload and text extraction
-- Mock and sentence-transformers embedding support
-- Semantic retrieval with cosine similarity
-- Grounded answers with source citations
-- Basic quiz generation from document content
-- Streamlit UI for easy local demos
-- Local benchmark runner for quick validation
+## LangChain-based RAG Pipeline
+The main app flow now uses LangChain for the core retrieval pipeline:
+
+`PDF -> PyPDFLoader -> RecursiveCharacterTextSplitter -> HuggingFaceEmbeddings -> FAISS -> Retriever -> Grounded Answer with Citations`
+
+- LangChain loads PDFs page by page
+- `RecursiveCharacterTextSplitter` creates overlapping chunks
+- HuggingFace `all-MiniLM-L6-v2` embeddings provide real semantic retrieval
+- FAISS stores vectors in memory
+- The retriever finds relevant chunks
+- The app answers only from retrieved context and shows citations
+
+Mock embeddings are still available for offline demos and testing.
 
 ## Installation
-1. Clone the repository
 ```bash
-git clone <repo-url>
-cd SmartStudyAssistant
-```
-2. Install dependencies
-```bash
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 ## Running the app
 ```bash
-python -m streamlit run ui/streamlit_app.py
+streamlit run ui/streamlit_app.py
 ```
-Open the browser page shown in the terminal.
+
+The first run may download the HuggingFace model.
 
 ## Running the benchmark
+Legacy benchmark:
+
 ```bash
 python main_experiment.py --dataset local
 ```
-The benchmark saves output to `results/benchmark_results.csv` and `results/benchmark_summary.md`.
 
-## Example demo flow
-1. Open the Streamlit app
-2. Upload `data/example.pdf`
-3. Ask a question in the `Ask Questions` tab
-4. Generate a quiz in the `Generate Quiz` tab
-5. Review extracted text in the `OCR / Text` tab
-6. Run the benchmark from the command line
+LangChain UI-aligned benchmark:
 
-## Project structure
-- `core/` — shared configuration and data models
-- `services/` — core PDF, chunking, embedding, retrieval, QA, evaluation, quiz logic
-- `ui/` — Streamlit application
-- `data/` — demo PDF and evaluation dataset
-- `results/` — benchmark outputs
-- `tests/` — unit tests
-- `main_experiment.py` — clean benchmark runner
-- `requirements.txt` — project dependencies
+```bash
+python main_experiment.py --dataset local --rag-backend langchain --embedding-model sentence-transformers/all-MiniLM-L6-v2 --chunk-size 500 --overlap 50 --top-k 3
+```
 
-## Known limitations
-- Works best with extractable text PDFs; scanned image OCR is not enabled by default
-- Quiz generation uses simple heuristics, not a full question-generation model
-- Real sentence-transformers embeddings are optional and may require model download time
-- Answer generation is based on retrieved chunks rather than a generative LLM
+Benchmark outputs are written to `results/benchmark_results.csv` and `results/benchmark_summary.md`.
+
+## Using the app
+1. Run the Streamlit UI.
+2. Upload a text-based PDF.
+3. Adjust chunk size, overlap, top-k, and embedding model from the sidebar if needed.
+4. Process the PDF.
+5. Ask a question in the `Ask Questions` tab.
+6. Review citations and retrieved chunks.
+7. Generate a quiz from the processed document if needed.
+
+## Troubleshooting
+- `sentence-transformers` install issue:
+  Reinstall with `pip install -r requirements.txt`. Some systems need an updated `pip`, `setuptools`, and `wheel`.
+- `faiss-cpu` install issue:
+  Use a supported Python version and platform wheel. If FAISS is unavailable temporarily, the app cannot build the LangChain vector store.
+- Slow first model download:
+  The first HuggingFace model load can take time because the model is downloaded locally.
+- Weak answer quality:
+  Reprocess the PDF after changing chunk settings or the embedding model.
+- No internet or model download blocked:
+  Enable mock embeddings from the sidebar to keep the demo running without real embeddings.
 
 ## Notes
-- Keep the app simple and stable
-- Do not add experimental utilities or unfinished UI controls
-- Use the mock embedding provider for offline demos
+- The Streamlit UI uses the LangChain RAG pipeline.
+- The legacy benchmark path still exists for compatibility.
+- Text-based PDFs work best. Scanned PDFs may need OCR before retrieval becomes reliable.
