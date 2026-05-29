@@ -3,11 +3,7 @@
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 
-EMBEDDING_PROVIDER = "openai"   # options: "mock", "openai"
-EMBEDDING_MODEL = "text-embedding-3-small"
+# Supported providers: mock, sentence-transformers, openai
+EMBEDDING_PROVIDER = "mock"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 MOCK_EMBEDDING_DIM = 128
-
-LLM_PROVIDER = "openai"  # options: "mock", "openai"
-LLM_MODEL = "gpt-4o-mini"
-LLM_TEMPERATURE = 0.2
-LLM_MAX_TOKENS = 500

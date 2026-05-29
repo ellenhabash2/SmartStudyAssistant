@@ -1,8 +1,9 @@
+import re
 from dataclasses import dataclass
 from typing import List
 
-from services.retrieval_service import RetrievalService
-from services.llm_service import LLMService, LLMError
+from services.retrieval_service import RetrievalService, RetrievalResponse
+
 
 class QAError(Exception):
     """Raised when question answering fails."""
@@ -17,10 +18,12 @@ class QAResponse:
         query: The original user query.
         answer: The generated answer text.
         sources: The chunks used to build the answer.
+        is_reliable: Whether the answer is grounded in the retrieved document.
     """
     query: str
     answer: str
-    sources: List[int]
+    sources: List[str]
+    is_reliable: bool = True
 
 
 class QAService:
@@ -28,13 +31,8 @@ class QAService:
     Simple QA service that builds an answer from retrieved chunks.
     """
 
-    def __init__(
-            self,
-            retrieval_service: RetrievalService,
-            llm_service: LLMService | None = None,
-    ):
+    def __init__(self, retrieval_service: RetrievalService):
         self.retrieval_service = retrieval_service
-        self.llm_service = llm_service or LLMService()
 
     def answer(self, query: str) -> QAResponse:
         """
@@ -49,58 +47,109 @@ class QAService:
 
         try:
             retrieval_response = self.retrieval_service.retrieve(query, top_k=3)
+            texts = [res.chunk.text for res in retrieval_response.results]
+            is_reliable = self._is_answer_reliable(query, texts)
 
-            chunks = retrieval_response.results
-
-            texts = [res.chunk.text for res in chunks]
-            pages = [res.chunk.page_number for res in chunks]
-
-            prompt = self._build_prompt(query, texts, pages)
-            answer = self.llm_service.generate(prompt)
+            if not is_reliable:
+                missing_topic = self._extract_missing_topic(query)
+                answer = (
+                    f"I could not find a reliable answer about {missing_topic} "
+                    "in the uploaded document."
+                )
+            else:
+                answer = self._build_answer(query, texts)
 
             return QAResponse(
                 query=query,
                 answer=answer,
-                sources=pages,
+                sources=texts,
+                is_reliable=is_reliable,
             )
-        except LLMError as e:
-            raise QAError(f"LLM answer generation failed: {e}") from e
+
         except Exception as e:
             raise QAError(f"QA failed: {e}") from e
 
     @staticmethod
-    def _build_prompt(query: str, texts: List[str], pages: List[int]) -> str:
+    def _extract_keywords(text: str) -> List[str]:
+        tokens = re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?", text.lower())
+        stopwords = {
+            "what", "is", "a", "an", "the", "of", "in", "on",
+            "for", "to", "about", "does", "do", "how", "why",
+            "can", "should", "with", "as", "and", "or", "from",
+            "that", "this", "are", "be", "it",
+        }
+        return [token for token in tokens if token not in stopwords]
+
+    @staticmethod
+    def _synonym_map() -> dict[str, List[str]]:
+        return {
+            "inner": ["inner join", "join"],
+            "join": ["inner join", "join"],
+            "sql": ["structured query language", "sql"],
+            "rdbms": ["relational database management system", "relational database"],
+            "select": ["select"],
+            "table": ["table"],
+        }
+
+    @classmethod
+    def _term_matches_text(cls, term: str, text: str) -> bool:
+        if term in text:
+            return True
+        for synonym in cls._synonym_map().get(term, []):
+            if synonym in text:
+                return True
+        return False
+
+    @classmethod
+    def _is_answer_reliable(cls, query: str, texts: List[str]) -> bool:
+        if not texts:
+            return False
+
+        combined_text = "\n\n".join(texts).lower()
+        keywords = cls._extract_keywords(query)
+        if not keywords:
+            return False
+
+        # Retrieve phrase-specific requirements for high-risk topics like INNER JOIN
+        if "inner join" in query.lower():
+            if "inner join" not in combined_text and "join" not in combined_text:
+                return False
+
+        matching = 0
+        for keyword in keywords:
+            if cls._term_matches_text(keyword, combined_text):
+                matching += 1
+
+        coverage = matching / len(keywords)
+        return coverage >= 0.4
+
+    @staticmethod
+    def _extract_missing_topic(query: str) -> str:
+        normalized = query.strip().rstrip("? ").lower()
+        if "inner join" in normalized:
+            return "INNER JOIN"
+        if "join" in normalized:
+            return "JOIN"
+
+        topic = re.sub(r"[^A-Za-z0-9 ]+", "", normalized).strip()
+        if topic:
+            return topic.upper()
+
+        return "the requested topic"
+
+    @staticmethod
+    def _build_answer(query: str, texts: List[str]) -> str:
         """
-        Build a grounded QA prompt from retrieved texts.
+        Build a simple answer from retrieved texts.
+
+        NOTE:
+        This is a placeholder implementation.
+        In the future, this method will be replaced with an LLM-based solution
+        (e.g., OpenAI) that generates a natural language answer using the retrieved context.
         """
         if not texts:
-            return (
-                "You are a study assistant.\n"
-                "No relevant context was found.\n"
-                "Say that the document does not provide enough information.\n\n"
-                f"Question:\n{query}\n\n"
-                "Answer:"
-            )
+            return "No relevant information found."
 
-        context_parts = []
-        for text, page in zip(texts[:3], pages[:3]):
-            context_parts.append(
-                f"[Page {page}]\n{text}"
-            )
-        context = "\n\n---\n\n".join(context_parts)
+        combined = "\n\n".join(texts[:3])
 
-        return (
-            "You are a study assistant answering questions about a PDF document.\n"
-            "Answer ONLY based on the provided context below.\n"
-            "Do NOT use outside knowledge.\n\n"
-            "Instructions:\n"
-            "1. If the context gives a direct answer, answer clearly.\n"
-            "2. If the context does not give a direct definition, explain what can be inferred from the context.\n"
-            "3. If the information is insufficient, clearly say that.\n"
-            "4. When possible, cite sources using page numbers, for example: (Page 2).\n"
-            "5. Be concise and clear.\n\n"
-            f"Context:\n{context}\n\n"
-            f"Question:\n{query}\n\n"
-            "Answer:"
-        )
-
+        return f"Based on the document:\n\n{combined[:500]}"

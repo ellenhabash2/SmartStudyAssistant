@@ -1,21 +1,33 @@
-streamlit
-PyMuPDF
-pypdf
-numpy
+# Smart Study Assistant - RAG Platform
 
-# Optional real embedding providers:
-# sentence-transformers
-# huggingface_hub
-# openai
+# LangChain RAG stack
+langchain
+langchain-community
+langchain-core
+langchain-huggingface
+langchain-text-splitters
+faiss-cpu
 
-# Optional benchmark downloader:
-# datasets
+# PDF Processing
+PyMuPDF==1.23.8
+pypdf==4.0.0
+pytesseract==0.3.13
 
-# Optional vector database backends:
-# faiss-cpu
-# chromadb
-# qdrant-client
+# Text Processing & Embeddings
+nltk==3.8.1
+sentence-transformers==2.2.2
 
-# Optional OCR support:
-# Pillow
-# pytesseract
+# API Integration (optional)
+openai==1.3.0
+
+# Web UI
+streamlit==1.28.0
+
+# Data & Utilities
+numpy==1.24.3
+pandas==2.0.3
+
+# Development & Testing
+pytest==7.4.0
+black==23.7.0
+ruff==0.0.292

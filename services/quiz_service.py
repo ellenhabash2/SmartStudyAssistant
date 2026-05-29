@@ -1,108 +1,154 @@
+from __future__ import annotations
+
+import re
 from dataclasses import dataclass
-from typing import List
+from typing import Any, List, Optional
 
-from services.llm_service import LLMService
-from services.retrieval_service import RetrievalService
-
-
-class QuizError(Exception):
-    """Raised when quiz generation fails."""
-    pass
+from core.models import DocumentChunk
 
 
 @dataclass(frozen=True)
 class QuizQuestion:
-    question: str
+    prompt: str
+    options: List[str]
     answer: str
+    explanation: Optional[str] = None
+    citation: Optional[str] = None
+    source: Optional[str] = None
+    page: Optional[int] = None
 
 
 class QuizService:
-    """
-    Generates quiz questions from retrieved document chunks.
-    """
+    """Simple quiz generator for document-based multiple-choice questions."""
 
-    def __init__(
-        self,
-        retrieval_service: RetrievalService,
-        llm_service: LLMService | None = None,
-    ):
-        self.retrieval_service = retrieval_service
-        self.llm_service = llm_service or LLMService()
-
-    def generate_quiz(
-        self,
-        topic: str,
-        num_questions: int = 3,
-    ) -> List[QuizQuestion]:
-        """
-        Generate quiz questions about a topic.
-        """
-
-        retrieval_response = self.retrieval_service.retrieve(
-            topic,
-            top_k=3,
-        )
-
-        context = "\n\n".join(
-            [r.chunk.text for r in retrieval_response.results]
-        )
-
-        prompt = self._build_prompt(
-            topic,
-            context,
-            num_questions,
-        )
-
-        response = self.llm_service.generate(prompt)
-
-        return self._parse_questions(response)
+    STOP_WORDS = {
+        "the", "and", "with", "that", "this", "those", "their", "about",
+        "which", "there", "where", "while", "because", "through", "between",
+    }
 
     @staticmethod
-    def _build_prompt(
-        topic: str,
-        context: str,
-        num_questions: int,
-    ) -> str:
-        return (
-            "You are a study assistant.\n"
-            "Generate quiz questions based ONLY on the context below.\n"
-            "Do not use outside knowledge.\n\n"
-            f"Generate {num_questions} short questions and answers.\n\n"
-            "Format:\n"
-            "Q: question\n"
-            "A: answer\n\n"
-            f"Topic: {topic}\n\n"
-            f"Context:\n{context}\n\n"
-        )
+    def _split_sentences(text: str) -> List[str]:
+        text = re.sub(r"\s+", " ", text or "").strip()
+        if not text:
+            return []
+        return [sentence.strip() for sentence in re.split(r'(?<=[.?!])\s+', text) if sentence.strip()]
 
     @staticmethod
-    def _parse_questions(text: str) -> List[QuizQuestion]:
-        """
-        Parse LLM response into structured quiz questions.
-        """
+    def _select_keyword(sentence: str) -> Optional[str]:
+        words = [w.strip(".,;:()[]\"'`)" ) for w in sentence.split()]
+        candidates = [w for w in words if len(w) > 5 and w.lower() not in QuizService.STOP_WORDS]
+        return max(candidates, key=len) if candidates else None
 
-        lines = text.splitlines()
+    @staticmethod
+    def _build_options(correct: str, pool: List[str], num_options: int = 4) -> List[str]:
+        options = [correct]
+        seen = {correct.lower()}
+        for candidate in pool:
+            normalized = candidate.lower()
+            if normalized in seen or len(candidate) <= 3:
+                continue
+            seen.add(normalized)
+            options.append(candidate)
+            if len(options) >= num_options:
+                break
+        fallback_terms = ["analysis", "document", "concept", "process", "method", "record"]
+        for fallback in fallback_terms:
+            if len(options) >= num_options:
+                break
+            if fallback.lower() in seen:
+                continue
+            seen.add(fallback.lower())
+            options.append(fallback)
+        return options
 
-        questions = []
+    @staticmethod
+    def _extract_doc_data(item: Any) -> dict[str, Any]:
+        if isinstance(item, DocumentChunk):
+            return {
+                "text": item.text,
+                "source": "Uploaded PDF",
+                "page": item.page_number,
+            }
 
-        current_question = None
+        if isinstance(item, dict):
+            return {
+                "text": item.get("text", ""),
+                "source": item.get("source", "Uploaded PDF"),
+                "page": item.get("page"),
+            }
 
-        for line in lines:
-            line = line.strip()
+        metadata = dict(getattr(item, "metadata", {}) or {})
+        return {
+            "text": getattr(item, "page_content", ""),
+            "source": metadata.get("source", "Uploaded PDF"),
+            "page": metadata.get("page"),
+        }
 
-            if line.startswith("Q:"):
-                current_question = line.replace("Q:", "").strip()
+    @classmethod
+    def generate_mcq(cls, chunks: List[DocumentChunk], num_questions: int = 3) -> List[QuizQuestion]:
+        """Generate simple multiple-choice questions from legacy chunk objects."""
+        return cls.generate_from_documents(chunks, num_questions=num_questions)
 
-            elif line.startswith("A:") and current_question:
-                answer = line.replace("A:", "").strip()
-
-                questions.append(
-                    QuizQuestion(
-                        question=current_question,
-                        answer=answer,
-                    )
+    @classmethod
+    def generate_from_documents(cls, documents: List[Any], num_questions: int = 3) -> List[QuizQuestion]:
+        """Generate deterministic fill-in-the-blank questions with citations."""
+        sentence_rows: List[dict[str, Any]] = []
+        for item in documents:
+            doc_data = cls._extract_doc_data(item)
+            for sentence in cls._split_sentences(doc_data["text"]):
+                if len(sentence.split()) < 8:
+                    continue
+                sentence_rows.append(
+                    {
+                        "sentence": sentence,
+                        "source": doc_data["source"],
+                        "page": doc_data["page"],
+                    }
                 )
 
-                current_question = None
+        if not sentence_rows:
+            return []
+
+        keyword_pool: List[str] = []
+        for row in sentence_rows:
+            keyword = cls._select_keyword(row["sentence"])
+            if keyword:
+                keyword_pool.append(keyword)
+
+        questions: List[QuizQuestion] = []
+        seen_prompts = set()
+        for row in sentence_rows:
+            sentence = row["sentence"]
+            keyword = cls._select_keyword(sentence)
+            if not keyword:
+                continue
+
+            prompt = f"Fill in the blank: {sentence.replace(keyword, '_____', 1)}"
+            if prompt in seen_prompts:
+                continue
+
+            options = cls._build_options(keyword, keyword_pool, num_options=4)
+            if len(options) < 2:
+                continue
+
+            page = row["page"]
+            source = row["source"] or "Uploaded PDF"
+            citation = f"{source} p.{page}" if page else source
+
+            questions.append(
+                QuizQuestion(
+                    prompt=prompt,
+                    options=options,
+                    answer=keyword,
+                    explanation=f"The correct answer is '{keyword}'.",
+                    citation=citation,
+                    source=source,
+                    page=page,
+                )
+            )
+            seen_prompts.add(prompt)
+
+            if len(questions) >= num_questions:
+                break
 
         return questions

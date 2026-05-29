@@ -14,21 +14,22 @@ This lets us measure exactly which design choices affect system quality.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, asdict
-from typing import List, Optional
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 from core.models import DocumentChunk
+from services.pdf_service import PdfService
 from services.chunk_service import ChunkService
-from services.dataset_loader import DatasetLoader, ExperimentDataset
 from services.embedding_service import EmbeddingService
+from services.vector_store_service import VectorStoreService
 from services.retrieval_service import RetrievalService
+from services.qa_service import QAService
 from services.evaluation_service import EvaluationService, AggregatedMetrics, EvaluationResult
 from services.baseline_retriever import RetrievalBaselines
-from reranking.rerankers import HeuristicReranker
-from vectorstores.factory import VectorStoreFactory
-from generation.answer_generator import AnswerGenerator
+
 
 @dataclass
 class ExperimentConfig:
@@ -37,18 +38,7 @@ class ExperimentConfig:
     chunk_overlap: int
     top_k: int
     embedding_provider: str = "mock"
-    embedding_model: str = ""
-    embedding_batch_size: int = 32
-    normalize_embeddings: bool = True
-    embedding_dimension: int | None = None
-    chunking_strategy: str = "recursive"
-    retrieval_mode: str = "semantic"  # Options: semantic, bm25, hybrid
-    reranker: Optional[str] = None  # Options: heuristic
-    vector_store: str = "memory"  # Options: memory, faiss, chroma, qdrant
-    vector_store_path: Optional[str] = None
-    generation_mode: str = "retrieved_chunks"  # Options: retrieved_chunks, grounded
-    llm_provider: str = "mock"  # Options: mock, openai
-    show_citations: bool = False
+    embedding_model: str = "text-embedding-3-small"
     answer_mode: str = "retrieved_chunks"  # Options: retrieved_chunks, llm (future), baseline
     baseline_method: Optional[str] = None  # If answer_mode=baseline
 
@@ -62,12 +52,7 @@ class ExperimentConfig:
             f"chunk_size={self.chunk_size}, "
             f"overlap={self.chunk_overlap}, "
             f"top_k={self.top_k}, "
-            f"provider={self.embedding_provider}, "
-            f"model={self.embedding_model or 'default'}, "
-            f"chunking={self.chunking_strategy}, "
-            f"retrieval={self.retrieval_mode}, "
-            f"vector_store={self.vector_store}, "
-            f"generation={self.generation_mode}"
+            f"provider={self.embedding_provider}"
         )
 
 
@@ -93,14 +78,6 @@ class ExperimentResult:
             **metrics_dict,
         }
 
-    def retrieval_method(self) -> str:
-        """Label the retrieval method used in reports."""
-        if self.config.baseline_method:
-            return f"baseline:{self.config.baseline_method}"
-        if self.config.reranker:
-            return f"{self.config.retrieval_mode}+rerank:{self.config.reranker}"
-        return self.config.retrieval_mode
-
 
 class ExperimentRunner:
     """
@@ -111,7 +88,6 @@ class ExperimentRunner:
         self,
         pdf_path: str,
         eval_dataset_path: str,
-        dataset: ExperimentDataset | None = None,
     ):
         """
         Initialize experiment runner.
@@ -119,19 +95,16 @@ class ExperimentRunner:
         Args:
             pdf_path: Path to PDF file
             eval_dataset_path: Path to evaluation dataset JSON
-            dataset: Optional pre-loaded dataset. If omitted, load a local PDF dataset.
         """
-        if dataset is None:
-            dataset = DatasetLoader.load_pdf_dataset(pdf_path, eval_dataset_path)
-
-        self.dataset = dataset
         self.pdf_path = Path(pdf_path)
         self.eval_dataset_path = Path(eval_dataset_path)
-        self.eval_dataset = dataset.eval_questions
 
-        print(f"✓ Loaded dataset: {self.dataset.name}")
+        # Load evaluation dataset
+        with open(self.eval_dataset_path) as f:
+            self.eval_dataset = json.load(f)
+
         print(f"✓ Loaded {len(self.eval_dataset)} evaluation questions")
-        print(f"✓ Source: {self.dataset.source_path}")
+        print(f"✓ PDF: {self.pdf_path}")
 
     def run_experiments(
         self,
@@ -187,12 +160,13 @@ class ExperimentRunner:
             ExperimentResult with all metrics
         """
         try:
-            # Step 1: Load dataset pages
+            # Step 1: Extract PDF
             if verbose:
-                print("  1. Loading dataset pages...")
-            pages = self.dataset.pages
+                print("  1. Extracting PDF...")
+            pdf_service = PdfService()
+            pages = pdf_service.extract_pages(self.pdf_path)
             if verbose:
-                print(f"     ✓ Loaded {len(pages)} pages/sections")
+                print(f"     ✓ Extracted {len(pages)} pages")
 
             # Step 2: Chunk with config settings
             if verbose:
@@ -200,7 +174,6 @@ class ExperimentRunner:
             chunk_service = ChunkService(
                 chunk_size=config.chunk_size,
                 chunk_overlap=config.chunk_overlap,
-                strategy=config.chunking_strategy,
             )
             chunks = chunk_service.chunk_pages(pages)
             if verbose:
@@ -212,43 +185,21 @@ class ExperimentRunner:
             embedding_service = EmbeddingService(
                 provider=config.embedding_provider,
                 model=config.embedding_model,
-                batch_size=config.embedding_batch_size,
-                normalize_embeddings=config.normalize_embeddings,
             )
             embeddings = embedding_service.embed_texts(chunks)
-            config.embedding_provider = embedding_service.provider
-            config.embedding_model = embedding_service.model
-            config.embedding_dimension = embedding_service.embedding_dimension
             if verbose:
-                print(
-                    f"     ✓ Created {len(embeddings)} embeddings "
-                    f"(dim={config.embedding_dimension or 'unknown'})"
-                )
+                print(f"     ✓ Created {len(embeddings)} embeddings")
 
             # Step 4: Build vector store
             if verbose:
-                print(f"  4. Building vector store ({config.vector_store})...")
-            vector_store = VectorStoreFactory.create(
-                backend=config.vector_store,
-                collection_name=f"{self.dataset.name}_{config.chunking_strategy}",
-                persist_path=config.vector_store_path,
-            )
+                print("  4. Building vector store...")
+            vector_store = VectorStoreService()
             vector_store.add(chunks, embeddings)
-            if config.vector_store_path:
-                vector_store.save(config.vector_store_path)
 
             # Step 5: Setup retrieval
-            reranker = HeuristicReranker() if config.reranker == "heuristic" else None
             retrieval_service = RetrievalService(
                 embedding_service=embedding_service,
                 vector_store=vector_store,
-                chunks=chunks,
-                retrieval_mode=config.retrieval_mode,
-                reranker=reranker,
-            )
-            answer_generator = AnswerGenerator(
-                llm_provider=config.llm_provider,
-                show_citations=config.show_citations,
             )
 
             # Also setup baselines if needed
@@ -271,7 +222,6 @@ class ExperimentRunner:
                         config,
                         retrieval_service,
                         baselines,
-                        answer_generator,
                         chunks,
                     )
                     evaluation_results.append(result)
@@ -287,9 +237,7 @@ class ExperimentRunner:
             if verbose:
                 print(f"\n  Results:")
                 print(f"    Accuracy: {aggregated.accuracy:.3f}")
-                precision = aggregated.optional_average("precision_at_k")
-                precision_label = f"{precision:.3f}" if precision is not None else "n/a"
-                print(f"    Precision@K: {precision_label}")
+                print(f"    Precision@K: {aggregated.precision_at_k:.3f}")
                 print(f"    Grounding Score: {aggregated.grounding_score:.3f}")
                 print(f"    Avg Response Time: {aggregated.avg_response_time:.3f}s")
 
@@ -324,7 +272,6 @@ class ExperimentRunner:
         config: ExperimentConfig,
         retrieval_service: RetrievalService,
         baselines: RetrievalBaselines,
-        answer_generator: AnswerGenerator,
         chunks: List[DocumentChunk],
     ) -> EvaluationResult:
         """
@@ -340,12 +287,9 @@ class ExperimentRunner:
         Returns:
             EvaluationResult with all metrics
         """
-        question = str(q_data.get("question", "") or "").strip()
-        ground_truth_answer = str(q_data.get("answer", "") or "").strip()
-        source_text = str(q_data.get("source_text", "") or "").strip()
-
-        if not question or not ground_truth_answer:
-            raise ValueError("Evaluation record is missing question or answer.")
+        question = q_data["question"]
+        ground_truth_answer = q_data["answer"]
+        source_text = q_data["source_text"]
 
         # Step 1: Retrieve chunks
         start_time = time.time()
@@ -357,8 +301,6 @@ class ExperimentRunner:
                 top_k=config.top_k,
             )
             retrieved_chunks = [r.chunk.text for r in retrieval_response.results]
-            used_chunk_ids: list[str] = []
-            cited_chunk_ids: list[str] = []
 
         elif config.answer_mode == "baseline" and config.baseline_method:
             # Use baseline retrieval
@@ -369,32 +311,12 @@ class ExperimentRunner:
             retrieved_chunks = RetrievalBaselines.chunks_to_text(
                 baseline_results[config.baseline_method]
             )
-            used_chunk_ids = []
-            cited_chunk_ids = []
         else:
             retrieved_chunks = []
-            used_chunk_ids = []
-            cited_chunk_ids = []
 
-        # Step 2: Generate answer
-        if config.answer_mode == "retrieved_chunks" and config.generation_mode in {
-            "grounded",
-            "grounded_mock",
-            "llm",
-        }:
-            generation_contexts = AnswerGenerator.contexts_from_search_results(
-                retrieval_response.results
-            )
-            generation_result = answer_generator.generate(
-                question=question,
-                contexts=generation_contexts,
-            )
-            generated_answer = generation_result.answer
-            used_chunk_ids = generation_result.used_chunk_ids
-            cited_chunk_ids = [citation.chunk_id for citation in generation_result.citations]
-        elif retrieved_chunks:
+        # Step 2: Generate answer (currently naive concatenation)
+        if retrieved_chunks:
             generated_answer = "\n".join(retrieved_chunks)
-
         else:
             generated_answer = ""
 
@@ -408,8 +330,6 @@ class ExperimentRunner:
             retrieved_chunks=retrieved_chunks,
             response_time=response_time,
             expected_source_text=source_text,
-            used_chunk_ids=used_chunk_ids,
-            cited_chunk_ids=cited_chunk_ids,
         )
 
 
@@ -424,12 +344,6 @@ class ExperimentComparator:
         if not self.results:
             return None
         return max(self.results, key=lambda r: r.aggregated_metrics.accuracy)
-
-    def find_worst_config_by_accuracy(self) -> Optional[ExperimentResult]:
-        """Find configuration with lowest accuracy."""
-        if not self.results:
-            return None
-        return min(self.results, key=lambda r: r.aggregated_metrics.accuracy)
 
     def find_best_config_by_grounding(self) -> Optional[ExperimentResult]:
         """Find configuration with highest grounding score."""
