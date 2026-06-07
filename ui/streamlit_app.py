@@ -5,6 +5,8 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+import random
+import re
 
 import streamlit as st
 
@@ -374,11 +376,21 @@ def answer_section_question(section: StudySection, question: str) -> str:
         ],
         question,
     )
+
     if response["ok"]:
         return f"{response['answer']}\n\n{source_label(section)}"
-    sentences = [item.strip() for item in text.replace("\n", " ").split(".") if len(item.split()) > 6]
-    answer = (sentences[0] + ".") if sentences else response["answer"]
-    return f"{answer}\n\n{source_label(section)}"
+
+    question_words = set(re.findall(r"[A-Za-z0-9]+", question.lower()))
+    sentences = [item.strip() + "." for item in text.replace("\n", " ").split(".") if len(item.split()) > 6]
+
+    best_sentence = sentences[0] if sentences else response.get("answer", "No text found.")
+    for s in sentences:
+        s_words = set(re.findall(r"[A-Za-z0-9]+", s.lower()))
+        if question_words & s_words:  
+            best_sentence = s
+            break
+
+    return f"*(Offline Fallback)*\n\n**Found related text:** {best_sentence}\n\n{source_label(section)}"
 
 
 def render_top_nav() -> None:
@@ -620,11 +632,13 @@ def build_section_quiz(section: StudySection) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
     if generated:
         first = generated[0]
+        options = first.options
+        random.shuffle(options)
         questions.append(
             {
                 "type": "multiple_choice",
                 "question": first.prompt,
-                "options": first.options,
+                "options": options,
                 "answer": first.answer,
                 "source_page": first.page or section.start_page,
             }
@@ -653,32 +667,69 @@ def build_section_quiz(section: StudySection) -> list[dict[str, Any]]:
 
 
 def render_section_quiz(section: StudySection) -> None:
-    correct = 0
-    scorable = 0
+    # Render questions and collect inputs
     for index, question in enumerate(st.session_state.section_quiz, start=1):
         st.markdown(f"**{index}. {question['question']}**")
         key = f"quiz-answer-{section.section_number}-{index}"
+
         if question["type"] in {"multiple_choice", "true_false"}:
-            answer = st.radio("Answer", question["options"], key=key, label_visibility="collapsed")
+            # Keep index=None so no option is pre-selected by default
+            answer = st.radio("Answer", question["options"], key=key, label_visibility="collapsed", index=None)
             st.session_state.section_quiz_answers[index] = answer
-            scorable += 1
-            if answer == question["answer"]:
-                correct += 1
         else:
             answer = st.text_area("Short answer", key=key, height=80)
             st.session_state.section_quiz_answers[index] = answer
+
         st.caption(source_label(section, question.get("source_page")))
 
+    # The submit button is always available. Empty answers will result in a lower score.
     if st.button("Submit quiz"):
-        score = round((correct / scorable) * 100) if scorable else 100
-        st.session_state.section_quiz_score = score
-        st.session_state.progress.quiz_scores.append(float(score))
-    if st.session_state.section_quiz_score is not None:
-        st.success(f"Score: {st.session_state.section_quiz_score}%")
-        with st.expander("Review answers"):
-            for index, question in enumerate(st.session_state.section_quiz, start=1):
-                st.write(f"{index}. Correct answer: {question['answer']}")
+        with st.spinner("Grading..."):
+            correct = 0
+            scorable = len(st.session_state.section_quiz)  # All questions count towards the final score
+            results_feedback = []
 
+            for index, question in enumerate(st.session_state.section_quiz, start=1):
+                user_answer = st.session_state.section_quiz_answers.get(index)
+
+                if question["type"] in {"multiple_choice", "true_false"}:
+                    if user_answer == question["answer"]:
+                        correct += 1
+                        results_feedback.append(f"Q{index}: Correct!")
+                    else:
+                        results_feedback.append(f"Q{index}: Incorrect. The correct answer was: {question['answer']}")
+                else:
+                    text = section_context(section)
+                    # Evaluate the open-ended question using the AI service
+                    eval_prompt = (
+                        f"Study section text: {text}\n\n"
+                        f"Question: {question['question']}\n"
+                        f"Expected answer: {question['answer']}\n"
+                        f"User's answer: {user_answer}\n\n"
+                        "Instruction: Evaluate the user's answer strictly based on the provided text. "
+                        "Do NOT use outside knowledge. If the text only states that Benyamin is the lecturer, "
+                        "and the user says 'he is the lecturer', the answer is 100% correct. "
+                        "Provide a score (0-100) and a short explanation. Format: 'Score: [0-100] | Feedback: [Explanation]'"
+                    )
+                    ai_response = GeneralAIService().ask([], eval_prompt)
+                    if ai_response["ok"]:
+                        feedback = ai_response["answer"]
+                        score_match = re.search(r"Score:\s*(\d+)", feedback)
+                        score = int(score_match.group(1)) if score_match else 0
+                        correct += (score / 100)
+                        results_feedback.append(f"Q{index}: {feedback}")
+                    else:
+                        results_feedback.append(f"Q{index}: Could not grade.")
+
+            st.session_state.section_quiz_score = round((correct / scorable) * 100)
+            st.session_state.quiz_feedback = results_feedback
+
+    # Display the results if the quiz was submitted
+    if st.session_state.section_quiz_score is not None:
+        st.success(f"Final Score: {st.session_state.section_quiz_score}%")
+        with st.expander("Detailed Review", expanded=True):
+            for feedback in st.session_state.quiz_feedback:
+                st.write(feedback)
 
 def render_ask_ai() -> None:
     st.subheader("AI Tutor")
