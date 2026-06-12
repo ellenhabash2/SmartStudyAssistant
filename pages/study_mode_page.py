@@ -23,6 +23,7 @@ from ui.state import (
     source_label,
 )
 from ui.workflow import answer_section_question, build_section_quiz, generate_explanation
+from services.ai_answer_grading_service import AIAnswerGradingService
 
 
 def render_pdf_pages(section) -> None:
@@ -127,19 +128,22 @@ def render_study_mode() -> None:
 
         state = section_state(section)
         if st.button("Explain This Section", use_container_width=True):
-            state["explanation"] = generate_explanation(section)
-            persist_current_state()
+            with st.spinner("Generating AI explanation..."):
+                state["explanation"] = generate_explanation(section)
+                persist_current_state()
         if state.get("explanation"):
             with st.expander("Explanation", expanded=True):
                 st.markdown(state["explanation"])
 
         with st.expander("Quiz", expanded=bool(state.get("quiz"))):
             if st.button("Generate Quiz", use_container_width=True):
-                state["quiz"] = build_section_quiz(section)
-                state["quiz_answers"] = {}
-                state["quiz_score"] = None
-                state["quiz_feedback"] = []
-                persist_current_state()
+                with st.spinner("Generating AI quiz questions..."):
+                    state["quiz"] = build_section_quiz(section)
+                    state["quiz_answers"] = {}
+                    state["quiz_score"] = None
+                    state["quiz_feedback"] = []
+                    persist_current_state()
+
             if state.get("quiz"):
                 render_section_quiz(section, state)
 
@@ -219,21 +223,12 @@ def should_show_next_section_button(current_index: int, total_sections: int) -> 
 
 
 def evaluate_short_answer(section, question: dict[str, Any], user_answer: Any) -> dict[str, Any]:
-    prompt = (
-        f"Study section text: {section_context(section)}\n\n"
-        f"Question: {question['question']}\n"
-        f"Expected answer: {question['answer']}\n"
-        f"User's answer: {user_answer}\n\n"
-        "Evaluate the answer strictly based on the provided text. "
-        "Provide a score from 0 to 100 and short feedback. Format: Score: [0-100] | Feedback: [Explanation]"
+    return AIAnswerGradingService.grade_short_answer(
+        question=question["question"],
+        expected_answer=question["answer"],
+        user_answer=user_answer,
+        context=section_context(section),
     )
-    response = GeneralAIService().ask([], prompt)
-    if not response["ok"]:
-        return {"score": 0, "feedback": "Could not grade."}
-
-    score_match = re.search(r"Score:\s*(\d+)", response["answer"])
-    score = int(score_match.group(1)) if score_match else 0
-    return {"score": max(0, min(score, 100)), "feedback": response["answer"]}
 
 
 def render_timer_display() -> None:

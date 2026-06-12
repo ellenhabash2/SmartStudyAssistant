@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
+import random
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from core.models import DocumentChunk
+from services.general_ai_service import GeneralAIService
 
 
 @dataclass(frozen=True)
@@ -85,13 +88,110 @@ class QuizService:
         }
 
     @classmethod
+    def _documents_to_context(cls, documents: List[Any], max_chars: int = 6000) -> str:
+        parts: List[str] = []
+
+        for item in documents:
+            doc_data = cls._extract_doc_data(item)
+            text = re.sub(r"\s+", " ", doc_data["text"] or "").strip()
+            if not text:
+                continue
+
+            source = doc_data["source"] or "Uploaded PDF"
+            page = doc_data["page"]
+            label = f"{source} p.{page}" if page else source
+            parts.append(f"[{label}]\n{text}")
+
+            if sum(len(part) for part in parts) >= max_chars:
+                break
+
+        return "\n\n".join(parts)[:max_chars]
+
+    @classmethod
+    def _generate_ai_questions(cls, documents: List[Any], num_questions: int) -> List[QuizQuestion]:
+        context = cls._documents_to_context(documents)
+
+        if not context:
+            return []
+
+        seed = random.randint(1000, 999999)
+
+        prompt = (
+            "Create multiple-choice quiz questions from the study material below.\n"
+            "Use only the provided material.\n"
+            "Create different questions each time, using the variation seed.\n"
+            "Return only valid JSON, without markdown.\n"
+            "The JSON must be a list of objects.\n"
+            "Each object must contain: prompt, options, answer, explanation, citation.\n"
+            "Each question must have exactly 4 options.\n"
+            "The answer must exactly match one of the options.\n"
+            "Avoid simple fill-in-the-blank questions.\n"
+            "Prefer conceptual understanding questions.\n\n"
+            f"Number of questions: {num_questions}\n"
+            f"Variation seed: {seed}\n\n"
+            f"Study material:\n{context}"
+        )
+
+        response = GeneralAIService().ask([], prompt)
+
+        if not response["ok"]:
+            return []
+
+        raw_answer = response.get("answer", "").strip()
+
+        try:
+            data = json.loads(raw_answer)
+        except json.JSONDecodeError:
+            return []
+
+        questions: List[QuizQuestion] = []
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+
+            prompt_text = str(item.get("prompt", "")).strip()
+            options = item.get("options", [])
+            answer = str(item.get("answer", "")).strip()
+
+            if not prompt_text or not isinstance(options, list) or len(options) != 4:
+                continue
+
+            clean_options = [str(option).strip() for option in options if str(option).strip()]
+
+            if len(clean_options) != 4 or answer not in clean_options:
+                continue
+
+            questions.append(
+                QuizQuestion(
+                    prompt=prompt_text,
+                    options=clean_options,
+                    answer=answer,
+                    explanation=str(item.get("explanation", "")).strip() or None,
+                    citation=str(item.get("citation", "Uploaded PDF")).strip(),
+                    source="AI Generated",
+                    page=None,
+                )
+            )
+
+            if len(questions) >= num_questions:
+                break
+
+        return questions
+
+    @classmethod
     def generate_mcq(cls, chunks: List[DocumentChunk], num_questions: int = 3) -> List[QuizQuestion]:
         """Generate simple multiple-choice questions from legacy chunk objects."""
         return cls.generate_from_documents(chunks, num_questions=num_questions)
 
     @classmethod
     def generate_from_documents(cls, documents: List[Any], num_questions: int = 3) -> List[QuizQuestion]:
-        """Generate deterministic fill-in-the-blank questions with citations."""
+        """Generate AI-based multiple-choice questions with deterministic fallback."""
+        ai_questions = cls._generate_ai_questions(documents, num_questions)
+
+        if ai_questions:
+            return ai_questions
+
         sentence_rows: List[dict[str, Any]] = []
         for item in documents:
             doc_data = cls._extract_doc_data(item)

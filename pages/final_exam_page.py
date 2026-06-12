@@ -112,14 +112,29 @@ def render_exam_result() -> None:
         return
 
     st.markdown("**Review missed answers**")
+
     for item in missed:
-        related = f" Related section: {item['related_section']}." if item.get("related_section") else ""
-        st.write(
-            f"Q{item['id']}: Correct answer: {item['expected_answer']}.{related}"
-        )
-        if item.get("related_section"):
-            if st.button("Review section", key=f"review-section-{item['id']}"):
-                go_to_section(item["related_section"])
+        related = f"Related section: {item['related_section']}" if item.get("related_section") else ""
+
+        with st.container(border=True):
+            st.markdown(f"**❌ Q{item['id']}: {item.get('question', '')}**")
+
+            st.markdown("**Your answer:**")
+            st.write(item.get("user_answer") or "No answer provided.")
+
+            st.markdown("**Correct answer:**")
+            st.write(item.get("expected_answer") or "No expected answer available.")
+
+            if item.get("feedback"):
+                st.markdown("**Feedback:**")
+                st.write(item["feedback"])
+
+            if related:
+                st.caption(related)
+
+            if item.get("related_section"):
+                if st.button("Review section", key=f"review-section-{item['id']}"):
+                    go_to_section(item["related_section"])
 
 
 def go_to_section(section_title: str) -> None:
