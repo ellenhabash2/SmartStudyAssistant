@@ -136,11 +136,13 @@ def render_study_mode() -> None:
 
         with st.expander("Quiz", expanded=bool(state.get("quiz"))):
             if st.button("Generate Quiz", use_container_width=True):
-                state["quiz"] = build_section_quiz(section)
-                state["quiz_answers"] = {}
-                state["quiz_score"] = None
-                state["quiz_feedback"] = []
-                persist_current_state()
+                with st.spinner("Generating AI quiz questions..."):
+                    state["quiz"] = build_section_quiz(section)
+                    state["quiz_answers"] = {}
+                    state["quiz_score"] = None
+                    state["quiz_feedback"] = []
+                    persist_current_state()
+
             if state.get("quiz"):
                 render_section_quiz(section, state)
 
