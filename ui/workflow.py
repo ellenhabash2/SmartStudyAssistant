@@ -80,9 +80,28 @@ def generate_study_plan_from_pending() -> None:
 def generate_explanation(section: StudySection) -> str:
     text = section_context(section)
     concepts = ", ".join(section.key_concepts[:4]) or "the main ideas"
+
+    prompt = (
+        "Explain this study section for a student preparing for an exam.\n"
+        "Use the provided section text only.\n"
+        "Structure the answer with these headings:\n"
+        "Summary, Key Ideas, Important Definitions, Exam Tips.\n"
+        "Keep it clear and practical.\n\n"
+        f"Section title: {section.title}\n"
+        f"Pages: {section.page_label}\n"
+        f"Key concepts: {concepts}\n\n"
+        f"Section text:\n{text[:6000]}"
+    )
+
+    response = GeneralAIService().ask([], prompt)
+    if response["ok"]:
+        provider = response.get("provider", "AI")
+        return f"{response['answer']}\n\n_AI provider: {provider}_\n\n{source_label(section)}"
+
     sentences = [item.strip() for item in text.replace("\n", " ").split(".") if len(item.split()) >= 6]
     summary = " ".join(sentence + "." for sentence in sentences[:2]) or section.summary
     definitions = section.key_concepts[:3] or ["Core idea", "Example", "Review point"]
+
     return (
         f"**Summary**\n\n{summary}\n\n"
         f"**Key Ideas**\n\n- {concepts}\n- Connect the examples on {section.page_label.lower()} to the section title.\n\n"
@@ -91,7 +110,8 @@ def generate_explanation(section: StudySection) -> str:
         + "\n\n**Exam Tips**\n\n"
         "- Be ready to explain the section in your own words.\n"
         "- Practice one example without looking at the PDF.\n"
-        "- Review any key concept tag you cannot define quickly."
+        "- Review any key concept tag you cannot define quickly.\n\n"
+        f"_Offline fallback explanation_\n\n{source_label(section)}"
     )
 
 

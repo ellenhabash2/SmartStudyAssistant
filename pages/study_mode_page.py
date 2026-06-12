@@ -127,8 +127,9 @@ def render_study_mode() -> None:
 
         state = section_state(section)
         if st.button("Explain This Section", use_container_width=True):
-            state["explanation"] = generate_explanation(section)
-            persist_current_state()
+            with st.spinner("Generating AI explanation..."):
+                state["explanation"] = generate_explanation(section)
+                persist_current_state()
         if state.get("explanation"):
             with st.expander("Explanation", expanded=True):
                 st.markdown(state["explanation"])
