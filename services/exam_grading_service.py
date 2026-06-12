@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from services.study_service import StudySection
+from services.ai_answer_grading_service import AIAnswerGradingService
 
 
 class ExamGradingService:
@@ -27,7 +28,7 @@ class ExamGradingService:
             user_answer = str(answers.get(question_id, "") or "").strip()
             expected = str(question.get("answer", "") or "").strip()
             question_type = str(question.get("type", "short_answer"))
-            is_correct = cls._is_correct(question_type, user_answer, expected)
+            is_correct = cls._is_correct(question, question_type, user_answer, expected)
             related_section = cls.related_section(question, sections)
 
             if is_correct:
@@ -101,22 +102,54 @@ class ExamGradingService:
         return best_section if best_score > 0 else None
 
     @classmethod
-    def _is_correct(cls, question_type: str, user_answer: str, expected: str) -> bool:
+    def _is_correct(
+            cls,
+            question: dict[str, Any],
+            question_type: str,
+            user_answer: str,
+            expected: str,
+    ) -> bool:
         if not user_answer:
             return False
-        if question_type in {"multiple_choice", "true_false"}:
-            return cls._normalize(user_answer) == cls._normalize(expected)
 
-        user_tokens = cls._tokens(user_answer)
-        expected_tokens = cls._tokens(expected)
-        if not expected_tokens:
-            return bool(user_tokens)
-        overlap = len(user_tokens & expected_tokens)
-        return overlap >= max(1, min(3, round(len(expected_tokens) * 0.4)))
+        if question_type in {"multiple_choice", "true_false"}:
+            normalized_user = cls._normalize(user_answer)
+            normalized_expected = cls._normalize(expected)
+
+            if normalized_user == normalized_expected:
+                return True
+
+            user_letter = cls._extract_option_letter(user_answer)
+            expected_letter = cls._extract_option_letter(expected)
+
+            if user_letter and expected_letter:
+                return user_letter == expected_letter
+
+            options = question.get("options", [])
+            if expected_letter and isinstance(options, list):
+                option_index = ord(expected_letter) - ord("a")
+                if 0 <= option_index < len(options):
+                    expected_option = cls._normalize(str(options[option_index]))
+                    return normalized_user == expected_option
+
+            return False
+
+        evaluation = AIAnswerGradingService.grade_short_answer(
+            question=str(question.get("question", "")),
+            expected_answer=expected,
+            user_answer=user_answer,
+        )
+        return int(evaluation.get("score", 0)) >= 70
 
     @staticmethod
     def _normalize(value: str) -> str:
-        return re.sub(r"\s+", " ", value or "").strip().lower()
+        value = re.sub(r"^\s*[A-Da-d][.)]\s*", "", value or "")
+        return re.sub(r"\s+", " ", value).strip().lower()
+
+    @staticmethod
+    def _extract_option_letter(value: str) -> str:
+        match = re.match(r"^\s*([A-Da-d])(?:[.)]|\s*$)", value or "")
+        return match.group(1).lower() if match else ""
 
     @staticmethod
     def _tokens(value: str) -> set[str]:

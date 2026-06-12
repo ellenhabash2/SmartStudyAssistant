@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import urllib.request
 from dataclasses import dataclass
@@ -36,10 +37,14 @@ class ExamService:
         if provider is None:
             raise RuntimeError("Set OPENAI_API_KEY or GROQ_API_KEY for AI-generated final exams.")
 
+        seed = random.randint(1000, 999999)
+
         prompt = (
             "Create a final exam from this study material. Return JSON only with keys "
             "title, questions, answer_key. Each question needs id, type, question, options, answer, topic.\n\n"
             "Use only these question types: multiple_choice, true_false, short_answer.\n"
+            "Create a different version each time while staying based only on the material.\n"
+            f"Variation seed: {seed}\n"
             f"Question count: {max(1, min(options.question_count, 25))}\n"
             f"Difficulty: {options.difficulty}\n"
             f"Study material:\n{context[:12000]}"
@@ -55,7 +60,7 @@ class ExamService:
             response = client.chat.completions.create(
                 model=provider.model,
                 messages=messages,
-                temperature=0.25,
+                temperature=0.7,
                 response_format={"type": "json_object"},
             )
             return (response.choices[0].message.content or "").strip()
@@ -63,7 +68,7 @@ class ExamService:
         payload = {
             "model": provider.model,
             "messages": messages,
-            "temperature": 0.25,
+            "temperature": 0.7,
             "response_format": {"type": "json_object"},
         }
         request = urllib.request.Request(
