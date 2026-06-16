@@ -19,6 +19,7 @@ from ui.components import render_status_bar, render_top_nav
 from ui.navigation import NAV_ITEMS
 from ui.state import init_state
 from ui.styles import inject_custom_css
+from translations import t
 
 
 PAGE_RENDERERS = {
@@ -32,9 +33,9 @@ PAGE_RENDERERS = {
 
 
 def main() -> None:
-    st.set_page_config(page_title="Smart Study Assistant", page_icon=":books:", layout="wide")
-    inject_custom_css()
+    st.set_page_config(page_title=t("app_title"), page_icon=":books:", layout="wide")
     init_state()
+    inject_custom_css()
     render_top_nav()
     render_status_bar()
 

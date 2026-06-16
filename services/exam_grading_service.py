@@ -5,6 +5,7 @@ from typing import Any
 
 from services.study_service import StudySection
 from services.ai_answer_grading_service import AIAnswerGradingService
+from translations import normalize_language, translate
 
 
 class ExamGradingService:
@@ -16,7 +17,9 @@ class ExamGradingService:
         exam: dict[str, Any],
         answers: dict[str, Any],
         sections: list[StudySection],
+        language: str = "en",
     ) -> dict[str, Any]:
+        language = normalize_language(language)
         questions = [item for item in exam.get("questions", []) if isinstance(item, dict)]
         results: list[dict[str, Any]] = []
         weak_topics: list[str] = []
@@ -28,13 +31,13 @@ class ExamGradingService:
             user_answer = str(answers.get(question_id, "") or "").strip()
             expected = str(question.get("answer", "") or "").strip()
             question_type = str(question.get("type", "short_answer"))
-            is_correct = cls._is_correct(question, question_type, user_answer, expected)
+            is_correct = cls._is_correct(question, question_type, user_answer, expected, language)
             related_section = cls.related_section(question, sections)
 
             if is_correct:
                 correct_count += 1
             else:
-                topic = str(question.get("topic", "") or "Review").strip()
+                topic = str(question.get("topic", "") or translate("review", language)).strip()
                 if topic and topic not in weak_topics:
                     weak_topics.append(topic)
                 if related_section and related_section.title not in weak_sections:
@@ -48,7 +51,7 @@ class ExamGradingService:
                     "user_answer": user_answer,
                     "expected_answer": expected,
                     "is_correct": is_correct,
-                    "topic": question.get("topic", "Review"),
+                    "topic": question.get("topic", translate("review", language)),
                     "related_section": related_section.title if related_section else "",
                 }
             )
@@ -63,15 +66,22 @@ class ExamGradingService:
             "weak_topics": weak_topics,
             "weak_sections": weak_sections,
             "results": results,
-            "recommendation": cls.recommendation(weak_sections, weak_topics),
+            "recommendation": cls.recommendation(weak_sections, weak_topics, language),
         }
 
     @staticmethod
-    def recommendation(weak_sections: list[str], weak_topics: list[str]) -> str:
+    def recommendation(weak_sections: list[str], weak_topics: list[str], language: str = "en") -> str:
+        language = normalize_language(language)
         if weak_sections:
+            if language == "he":
+                return f"חזרו קודם על {weak_sections[0]}, ואז נסו שוב את השאלות שפספסתם."
             return f"Review {weak_sections[0]} first, then retry the missed questions."
         if weak_topics:
+            if language == "he":
+                return f"חזרו על {weak_topics[0]} וכתבו סיכום במשפט אחד לפני ניסיון נוסף במבחן."
             return f"Review {weak_topics[0]} and write a one-sentence summary before retaking the exam."
+        if language == "he":
+            return "עבודה טובה. עברו בקצרה על ההערות לפני שממשיכים."
         return "Good work. Revisit your notes briefly before moving on."
 
     @classmethod
@@ -108,6 +118,7 @@ class ExamGradingService:
             question_type: str,
             user_answer: str,
             expected: str,
+            language: str = "en",
     ) -> bool:
         if not user_answer:
             return False
@@ -134,10 +145,20 @@ class ExamGradingService:
 
             return False
 
+        normalized_user = cls._normalize(user_answer)
+        normalized_expected = cls._normalize(expected)
+        if normalized_user and (
+            normalized_user == normalized_expected
+            or normalized_user in normalized_expected
+            or normalized_expected in normalized_user
+        ):
+            return True
+
         evaluation = AIAnswerGradingService.grade_short_answer(
             question=str(question.get("question", "")),
             expected_answer=expected,
             user_answer=user_answer,
+            language=language,
         )
         return int(evaluation.get("score", 0)) >= 70
 

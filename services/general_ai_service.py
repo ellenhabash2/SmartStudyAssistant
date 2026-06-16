@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from translations import normalize_language, translate, tutor_language_instruction
+
 
 @dataclass(frozen=True)
 class AIProvider:
@@ -48,23 +50,35 @@ class GeneralAIService:
             if key and key not in os.environ:
                 os.environ[key] = value
 
-    def ask(self, messages: list[dict[str, str]], question: str) -> dict[str, Any]:
+    @staticmethod
+    def build_tutor_prompt(language: str = "en") -> str:
+        return tutor_language_instruction(language)
+
+    def ask(self, messages: list[dict[str, str]], question: str, language: str = "en") -> dict[str, Any]:
+        language = normalize_language(language)
         question = (question or "").strip()
         if not question:
-            return {"ok": False, "answer": "Please enter a question.", "provider": "none"}
+            return {"ok": False, "answer": translate("enter_question_first", language), "provider": "none"}
 
         provider = self.select_provider()
         if provider is None:
             return {
                 "ok": False,
-                "answer": "Set OPENAI_API_KEY or GROQ_API_KEY to use the general AI tutor.",
+                "answer": (
+                    "Set OPENAI_API_KEY or GROQ_API_KEY to use the general AI tutor."
+                    if language == "en"
+                    else "הגדירו OPENAI_API_KEY או GROQ_API_KEY כדי להשתמש במורה ה-AI."
+                ),
                 "provider": "none",
             }
 
         conversation = [
             {
                 "role": "system",
-                "content": "You are a clear, supportive AI tutor. Answer general study questions without PDF citations.",
+                "content": (
+                    "You are a clear, supportive AI tutor. Answer general study questions without PDF citations.\n"
+                    f"{self.build_tutor_prompt(language)}"
+                ),
             },
             *messages[-12:],
             {"role": "user", "content": question},
@@ -75,9 +89,14 @@ class GeneralAIService:
             else:
                 answer = self._ask_groq(provider, conversation)
         except Exception as exc:
+            answer = (
+                f"מורה ה-AI לא הצליח לענות כרגע: {exc}"
+                if language == "he"
+                else f"The AI tutor could not answer right now: {exc}"
+            )
             return {
                 "ok": False,
-                "answer": f"The AI tutor could not answer right now: {exc}",
+                "answer": answer,
                 "provider": provider.name,
             }
         return {"ok": True, "answer": answer, "provider": provider.name}

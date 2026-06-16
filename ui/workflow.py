@@ -16,7 +16,8 @@ from services.progress_service import ProgressService
 from services.quiz_service import QuizService
 from services.section_state_service import SectionStateService
 from services.study_service import StudySection, StudyService
-from ui.state import has_pdf, persist_current_state, reset_section_outputs, section_context, source_label
+from translations import current_language, t, tutor_language_instruction
+from ui.state import has_pdf, page_label, persist_current_state, reset_section_outputs, section_context, source_label
 
 
 def extract_pdf(uploaded_file: Any) -> None:
@@ -44,20 +45,28 @@ def set_pending_pdf(pdf_bytes: bytes, pdf_name: str, pages: list[Any]) -> None:
     suggested = StudyService.suggest_session_count(pages)
     st.session_state.suggested_session_count = suggested
     st.session_state.selected_session_count = suggested
-    st.session_state.pending_sections = StudyService().generate_study_plan_for_sessions(pages, suggested)
+    st.session_state.pending_sections = StudyService().generate_study_plan_for_sessions(
+        pages,
+        suggested,
+        language=current_language(),
+    )
 
     if not st.session_state.pending_sections:
-        raise PdfExtractionError("No readable study sessions could be created from this PDF.")
+        raise PdfExtractionError(t("no_readable_sessions"))
 
-    st.session_state.upload_message = f"Processed {pdf_name}. Ready to generate a study plan."
+    st.session_state.upload_message = t("processed_pdf_ready", pdf_name=pdf_name)
 
 
 def generate_study_plan_from_pending() -> None:
     pages = st.session_state.pending_pages
     session_count = int(st.session_state.selected_session_count or st.session_state.suggested_session_count or 1)
-    sections = StudyService().generate_study_plan_for_sessions(pages, session_count)
+    sections = StudyService().generate_study_plan_for_sessions(
+        pages,
+        session_count,
+        language=current_language(),
+    )
     if not sections:
-        raise PdfExtractionError("No readable study sessions could be created from this PDF.")
+        raise PdfExtractionError(t("no_readable_sessions"))
 
     st.session_state.pdf_bytes = st.session_state.pending_pdf_bytes
     st.session_state.pdf_name = st.session_state.pending_pdf_name
@@ -68,7 +77,7 @@ def generate_study_plan_from_pending() -> None:
         [section.section_number for section in sections],
     )
     st.session_state.current_section_index = 0
-    st.session_state.upload_message = f"Generated {len(sections)} study sessions."
+    st.session_state.upload_message = t("generated_sessions", count=len(sections))
     st.session_state.progress = ProgressService.default_state()
     st.session_state.final_exam = None
     st.session_state.final_exam_answers = {}
@@ -79,10 +88,12 @@ def generate_study_plan_from_pending() -> None:
 
 def generate_explanation(section: StudySection) -> str:
     text = section_context(section)
-    concepts = ", ".join(section.key_concepts[:4]) or "the main ideas"
+    language = current_language()
+    concepts = ", ".join(section.key_concepts[:4]) or ("הרעיונות המרכזיים" if language == "he" else "the main ideas")
 
     prompt = (
         "Explain this study section for a student preparing for an exam.\n"
+        f"{tutor_language_instruction(language)}\n"
         "Use the provided section text only.\n"
         "Structure the answer with these headings:\n"
         "Summary, Key Ideas, Important Definitions, Exam Tips.\n"
@@ -93,14 +104,27 @@ def generate_explanation(section: StudySection) -> str:
         f"Section text:\n{text[:6000]}"
     )
 
-    response = GeneralAIService().ask([], prompt)
+    response = GeneralAIService().ask([], prompt, language=language)
     if response["ok"]:
         provider = response.get("provider", "AI")
         return f"{response['answer']}\n\n_AI provider: {provider}_\n\n{source_label(section)}"
 
     sentences = [item.strip() for item in text.replace("\n", " ").split(".") if len(item.split()) >= 6]
     summary = " ".join(sentence + "." for sentence in sentences[:2]) or section.summary
-    definitions = section.key_concepts[:3] or ["Core idea", "Example", "Review point"]
+    definitions = section.key_concepts[:3] or [t("fallback_core_idea"), t("fallback_example"), t("fallback_review_point")]
+
+    if language == "he":
+        return (
+            f"**סיכום**\n\n{summary}\n\n"
+            f"**רעיונות מרכזיים**\n\n- {concepts}\n- קשרו את הדוגמאות ב{page_label(section)} לכותרת החלק.\n\n"
+            f"**הגדרות חשובות**\n\n"
+            + "\n".join(f"- {term}: הגדירו את המונח מתוך הערות החלק." for term in definitions)
+            + "\n\n**טיפים למבחן**\n\n"
+            "- ודאו שאתם יכולים להסביר את החלק במילים שלכם.\n"
+            "- תרגלו דוגמה אחת בלי להסתכל ב-PDF.\n"
+            "- חזרו על כל מושג מרכזי שאינכם יכולים להגדיר במהירות.\n\n"
+            f"_הסבר גיבוי לא מקוון_\n\n{source_label(section)}"
+        )
 
     return (
         f"**Summary**\n\n{summary}\n\n"
@@ -117,15 +141,22 @@ def generate_explanation(section: StudySection) -> str:
 
 def answer_section_question(section: StudySection, question: str) -> str:
     text = section_context(section)
+    language = current_language()
     response = GeneralAIService().ask(
-        [{"role": "user", "content": f"Use this study section as context when helpful:\n{text[:5000]}"}],
+        [{"role": "user", "content": f"{tutor_language_instruction(language)}\nUse this study section as context when helpful:\n{text[:5000]}"}],
         question,
+        language=language,
     )
 
     if response["ok"]:
         return f"{response['answer']}\n\n{source_label(section)}"
 
     if not text.strip():
+        if language == "he":
+            return (
+                "לא מצאתי עדיין טקסט קריא לחלק הזה. העלו מחדש את ה-PDF, בדקו שלחלק יש "
+                "טקסט ניתן לחילוץ, ואז שאלו על מונח או דוגמה ספציפיים מהעמוד."
+            )
         return (
             "I could not find readable text for this section yet. Re-open the PDF, check that this section has "
             "extractable text, then ask about a specific term or example from the page."
@@ -141,7 +172,16 @@ def answer_section_question(section: StudySection, question: str) -> str:
             best_sentence = sentence
             break
 
-    concepts = ", ".join(section.key_concepts[:3]) or "the main concepts"
+    concepts = ", ".join(section.key_concepts[:3]) or ("המושגים המרכזיים" if language == "he" else "the main concepts")
+    if language == "he":
+        return (
+            f"**תשובת חלק לא מקוונת**\n\n"
+            f"מצאתי שורה קשורה בחלק הנוכחי: {best_sentence}\n\n"
+            f"השתמשו בה כדי לחזור על {concepts}. שאלות המשך טובות הן: "
+            f"\"האם אני יכול להסביר את זה במילים שלי?\", \"איזו דוגמה תומכת בזה?\", ו"
+            f"\"איך זה יכול להופיע בשאלון?\"\n\n"
+            f"{source_label(section)}"
+        )
     return (
         f"**Offline section answer**\n\n"
         f"I found this related line in the current section: {best_sentence}\n\n"
@@ -153,25 +193,35 @@ def answer_section_question(section: StudySection, question: str) -> str:
 
 
 def answer_ai_tutor(question: str, use_pdf_context: bool = False) -> dict[str, Any]:
+    language = current_language()
     context_message = ""
     if use_pdf_context and has_pdf():
         context_message = all_study_context()[:6000]
 
     messages = list(st.session_state.ai_tutor_history)
     if context_message:
-        messages.append({"role": "user", "content": f"Optional uploaded PDF context:\n{context_message}"})
+        messages.append({"role": "user", "content": f"{tutor_language_instruction(language)}\nOptional uploaded PDF context:\n{context_message}"})
 
-    result = GeneralAIService().ask(messages, question)
+    result = GeneralAIService().ask(messages, question, language=language)
     if result["ok"]:
         return result
 
-    available = "I can use your uploaded PDF sections." if has_pdf() else "Upload a PDF to give me study context."
-    fallback = (
-        "AI Tutor needs `OPENAI_API_KEY` or `GROQ_API_KEY` for a full answer. "
-        f"{available} For now, try asking one focused question such as "
-        "\"summarize this section\", \"quiz me on the key concepts\", or "
-        "\"explain the hardest term in simple words.\""
-    )
+    if language == "he":
+        available = "אפשר להשתמש בחלקים מה-PDF שהעלית." if has_pdf() else "העלו PDF כדי לתת לי הקשר לימודי."
+        fallback = (
+            "מורה ה-AI צריך `OPENAI_API_KEY` או `GROQ_API_KEY` כדי לענות תשובה מלאה. "
+            f"{available} בינתיים נסו לשאול שאלה ממוקדת כמו "
+            "\"סכם את החלק הזה\", \"בחן אותי על המושגים המרכזיים\", או "
+            "\"הסבר את המונח הקשה ביותר בפשטות.\""
+        )
+    else:
+        available = "I can use your uploaded PDF sections." if has_pdf() else "Upload a PDF to give me study context."
+        fallback = (
+            "AI Tutor needs `OPENAI_API_KEY` or `GROQ_API_KEY` for a full answer. "
+            f"{available} For now, try asking one focused question such as "
+            "\"summarize this section\", \"quiz me on the key concepts\", or "
+            "\"explain the hardest term in simple words.\""
+        )
     return {"ok": False, "answer": fallback, "provider": "none"}
 
 
@@ -179,6 +229,7 @@ def build_section_quiz(section: StudySection) -> list[dict[str, Any]]:
     generated = QuizService.generate_from_documents(
         [{"text": section_context(section), "source": st.session_state.pdf_name, "page": section.start_page}],
         num_questions=3,
+        language=current_language(),
     )
     questions: list[dict[str, Any]] = []
     if generated:
@@ -199,18 +250,30 @@ def build_section_quiz(section: StudySection) -> list[dict[str, Any]]:
     questions.append(
         {
             "type": "true_false",
-            "question": f"True or False: {concept} is discussed in this section.",
-            "options": ["True", "False"],
-            "answer": "True",
+            "question": (
+                f"נכון או לא נכון: {concept} מופיע בחלק הזה."
+                if current_language() == "he"
+                else f"True or False: {concept} is discussed in this section."
+            ),
+            "options": [t("true"), t("false")],
+            "answer": t("true"),
             "source_page": section.start_page,
         }
     )
     questions.append(
         {
             "type": "short_answer",
-            "question": f"In one sentence, explain why {concept} matters in this section.",
+            "question": (
+                f"במשפט אחד, הסבירו למה {concept} חשוב בחלק הזה."
+                if current_language() == "he"
+                else f"In one sentence, explain why {concept} matters in this section."
+            ),
             "options": [],
-            "answer": "A strong answer should use the section text and mention the main idea clearly.",
+            "answer": (
+                "תשובה טובה צריכה להשתמש בטקסט החלק ולהזכיר בבירור את הרעיון המרכזי."
+                if current_language() == "he"
+                else "A strong answer should use the section text and mention the main idea clearly."
+            ),
             "source_page": section.start_page,
         }
     )
@@ -227,7 +290,7 @@ def all_study_context() -> str:
 def generate_final_exam(question_count: int, difficulty: str) -> dict[str, Any]:
     return ExamService().generate_final_exam(
         all_study_context(),
-        ExamOptions(question_count=int(question_count), difficulty=difficulty),
+        ExamOptions(question_count=int(question_count), difficulty=difficulty, language=current_language()),
     )
 
 
@@ -254,18 +317,25 @@ def next_recommended_section() -> StudySection | None:
 def build_weak_topic_review() -> str:
     review_sections = recommended_review_sections()
     if not review_sections:
-        return "All sections are complete. Revisit the final exam answers and retake any quiz below 80%."
+        return t("weak_review_complete")
 
     quiz_average = ProgressService.quiz_average(st.session_state.progress)
-    plans = ["### Weak Topic Review Plan"]
+    plans = [f"### {t('weak_review_title')}"]
     for title in review_sections:
         section = next((item for item in st.session_state.sections if item.title == title), None)
         if section is None:
             continue
         topic = section.key_concepts[0] if section.key_concepts else section.title
-        reason = "your quiz average is low" if quiz_average and quiz_average < 80 else "this section is not completed yet"
+        reason = t("reason_low_quiz") if quiz_average and quiz_average < 80 else t("reason_not_completed")
         plans.append(
-            f"- **Review {html.escape(topic)}** - {reason} in Section {section.section_number}. "
-            f"Re-read {section.page_label.lower()} and retake the section quiz."
+            "- **"
+            + t(
+                "weak_review_item",
+                topic=html.escape(topic),
+                reason=reason,
+                number=section.section_number,
+                page_label=page_label(section).lower(),
+            )
+            + "**"
         )
     return "\n".join(plans)

@@ -8,6 +8,7 @@ from typing import Any, List, Optional
 
 from core.models import DocumentChunk
 from services.general_ai_service import GeneralAIService
+from translations import normalize_language, quiz_language_instruction
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ class QuizService:
         return max(candidates, key=len) if candidates else None
 
     @staticmethod
-    def _build_options(correct: str, pool: List[str], num_options: int = 4) -> List[str]:
+    def _build_options(correct: str, pool: List[str], num_options: int = 4, language: str = "en") -> List[str]:
         options = [correct]
         seen = {correct.lower()}
         for candidate in pool:
@@ -54,7 +55,11 @@ class QuizService:
             options.append(candidate)
             if len(options) >= num_options:
                 break
-        fallback_terms = ["analysis", "document", "concept", "process", "method", "record"]
+        fallback_terms = (
+            ["ניתוח", "מסמך", "מושג", "תהליך", "שיטה", "רשומה"]
+            if normalize_language(language) == "he"
+            else ["analysis", "document", "concept", "process", "method", "record"]
+        )
         for fallback in fallback_terms:
             if len(options) >= num_options:
                 break
@@ -108,7 +113,13 @@ class QuizService:
         return "\n\n".join(parts)[:max_chars]
 
     @classmethod
-    def _generate_ai_questions(cls, documents: List[Any], num_questions: int) -> List[QuizQuestion]:
+    @staticmethod
+    def build_quiz_prompt(language: str = "en") -> str:
+        return quiz_language_instruction(language)
+
+    @classmethod
+    def _generate_ai_questions(cls, documents: List[Any], num_questions: int, language: str = "en") -> List[QuizQuestion]:
+        language = normalize_language(language)
         context = cls._documents_to_context(documents)
 
         if not context:
@@ -118,6 +129,7 @@ class QuizService:
 
         prompt = (
             "Create multiple-choice quiz questions from the study material below.\n"
+            f"{cls.build_quiz_prompt(language)}\n"
             "Use only the provided material.\n"
             "Create different questions each time, using the variation seed.\n"
             "Return only valid JSON, without markdown.\n"
@@ -132,7 +144,7 @@ class QuizService:
             f"Study material:\n{context}"
         )
 
-        response = GeneralAIService().ask([], prompt)
+        response = GeneralAIService().ask([], prompt, language=language)
 
         if not response["ok"]:
             return []
@@ -180,14 +192,20 @@ class QuizService:
         return questions
 
     @classmethod
-    def generate_mcq(cls, chunks: List[DocumentChunk], num_questions: int = 3) -> List[QuizQuestion]:
+    def generate_mcq(cls, chunks: List[DocumentChunk], num_questions: int = 3, language: str = "en") -> List[QuizQuestion]:
         """Generate simple multiple-choice questions from legacy chunk objects."""
-        return cls.generate_from_documents(chunks, num_questions=num_questions)
+        return cls.generate_from_documents(chunks, num_questions=num_questions, language=language)
 
     @classmethod
-    def generate_from_documents(cls, documents: List[Any], num_questions: int = 3) -> List[QuizQuestion]:
+    def generate_from_documents(
+        cls,
+        documents: List[Any],
+        num_questions: int = 3,
+        language: str = "en",
+    ) -> List[QuizQuestion]:
         """Generate AI-based multiple-choice questions with deterministic fallback."""
-        ai_questions = cls._generate_ai_questions(documents, num_questions)
+        language = normalize_language(language)
+        ai_questions = cls._generate_ai_questions(documents, num_questions, language=language)
 
         if ai_questions:
             return ai_questions
@@ -223,11 +241,15 @@ class QuizService:
             if not keyword:
                 continue
 
-            prompt = f"Fill in the blank: {sentence.replace(keyword, '_____', 1)}"
+            prompt = (
+                f"השלימו את החסר: {sentence.replace(keyword, '_____', 1)}"
+                if language == "he"
+                else f"Fill in the blank: {sentence.replace(keyword, '_____', 1)}"
+            )
             if prompt in seen_prompts:
                 continue
 
-            options = cls._build_options(keyword, keyword_pool, num_options=4)
+            options = cls._build_options(keyword, keyword_pool, num_options=4, language=language)
             if len(options) < 2:
                 continue
 
@@ -240,7 +262,11 @@ class QuizService:
                     prompt=prompt,
                     options=options,
                     answer=keyword,
-                    explanation=f"The correct answer is '{keyword}'.",
+                    explanation=(
+                        f"התשובה הנכונה היא '{keyword}'."
+                        if language == "he"
+                        else f"The correct answer is '{keyword}'."
+                    ),
                     citation=citation,
                     source=source,
                     page=page,

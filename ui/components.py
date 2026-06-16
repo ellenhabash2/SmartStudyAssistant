@@ -5,7 +5,8 @@ import html
 import streamlit as st
 
 from services.study_service import StudySection
-from ui.navigation import NAV_ITEMS
+from translations import SUPPORTED_LANGUAGES, t
+from ui.navigation import NAV_ITEMS, NAV_TRANSLATION_KEYS
 from ui.state import has_pdf, overall_progress
 
 
@@ -41,14 +42,24 @@ def badge(text: str, kind: str = "primary") -> str:
 def render_top_nav() -> None:
     with st.container(border=True):
         st.markdown('<div class="top-nav">', unsafe_allow_html=True)
-        columns = st.columns([2.25, 1, 1.15, 1.15, 1, 1, 1])
-        with columns[0]:
-            st.markdown('<div class="brand">Smart Study Assistant</div>', unsafe_allow_html=True)
-        for index, label in enumerate(NAV_ITEMS, start=1):
-            with columns[index]:
+        header_columns = st.columns([3.5, 1.25])
+        with header_columns[0]:
+            st.markdown(f'<div class="brand">{html.escape(t("app_title"))}</div>', unsafe_allow_html=True)
+        with header_columns[1]:
+            st.selectbox(
+                t("language"),
+                options=list(SUPPORTED_LANGUAGES),
+                format_func=lambda language: SUPPORTED_LANGUAGES[language],
+                key="language",
+            )
+
+        nav_columns = st.columns([1, 1.15, 1.15, 1, 1, 1])
+        for index, label in enumerate(NAV_ITEMS):
+            with nav_columns[index]:
+                display_label = t(NAV_TRANSLATION_KEYS[label])
                 if st.session_state.current_page == label:
-                    st.markdown(f'<div class="nav-active">{html.escape(label)}</div>', unsafe_allow_html=True)
-                elif st.button(label, key=f"nav-{label}", use_container_width=True):
+                    st.markdown(f'<div class="nav-active">{html.escape(display_label)}</div>', unsafe_allow_html=True)
+                elif st.button(display_label, key=f"nav-{label}", use_container_width=True):
                     st.session_state.current_page = label
                     st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
@@ -57,22 +68,22 @@ def render_top_nav() -> None:
 def render_status_bar() -> None:
     if has_pdf():
         status = (
-            f"<span><strong>Current PDF:</strong> {html.escape(st.session_state.pdf_name)}</span>"
-            f"<span><strong>Pages:</strong> {len(st.session_state.pages)}</span>"
-            f"<span><strong>Sessions:</strong> {len(st.session_state.sections)}</span>"
-            f"<span><strong>Progress:</strong> {overall_progress():.0f}%</span>"
+            f"<span><strong>{html.escape(t('current_pdf'))}:</strong> {html.escape(st.session_state.pdf_name)}</span>"
+            f"<span><strong>{html.escape(t('pages'))}:</strong> {len(st.session_state.pages)}</span>"
+            f"<span><strong>{html.escape(t('sessions'))}:</strong> {len(st.session_state.sections)}</span>"
+            f"<span><strong>{html.escape(t('progress'))}:</strong> {overall_progress():.0f}%</span>"
         )
     else:
-        status = "No PDF loaded yet - upload a document to begin."
+        status = t("no_pdf_loaded")
     st.markdown(f'<div class="status-bar">{status}</div>', unsafe_allow_html=True)
 
 
 def render_upload_hero() -> None:
     st.markdown(
-        """
+        f"""
         <div class="hero-card">
-            <h1>Turn PDFs into guided study sessions, quizzes, and exam practice.</h1>
-            <p>Upload course material, study section by section, and ask the AI Tutor for help.</p>
+            <h1>{html.escape(t("upload_hero_title"))}</h1>
+            <p>{html.escape(t("upload_hero_body"))}</p>
         </div>
         """,
         unsafe_allow_html=True,

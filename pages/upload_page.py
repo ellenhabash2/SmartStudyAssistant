@@ -4,16 +4,23 @@ import streamlit as st
 
 from services.pdf_service import PdfExtractionError
 from services.study_service import StudyService
+from translations import current_language, t
 from ui.components import render_upload_hero
 from ui.workflow import extract_pdf, generate_study_plan_from_pending
 
 
 def render_upload() -> None:
     render_upload_hero()
-    st.subheader("Upload PDF")
-    source = st.radio("PDF source", ["Upload file", "Upload folder"], horizontal=True)
+    st.subheader(t("upload_pdf"))
+    source_options = ["file", "folder"]
+    source = st.radio(
+        t("pdf_source"),
+        source_options,
+        format_func=lambda value: t("upload_file") if value == "file" else t("upload_folder"),
+        horizontal=True,
+    )
 
-    if source == "Upload file":
+    if source == "file":
         render_file_upload()
     else:
         render_folder_upload()
@@ -22,61 +29,65 @@ def render_upload() -> None:
 
 
 def render_file_upload() -> None:
-    uploaded_file = st.file_uploader("Choose a PDF", type=["pdf"])
+    uploaded_file = st.file_uploader(t("choose_pdf"), type=["pdf"])
 
     if uploaded_file is not None:
         signature = uploaded_file_signature(uploaded_file)
         if st.session_state.processed_upload_signature != signature:
             try:
-                with st.spinner("Extracting text from your PDF..."):
+                with st.spinner(t("extracting_pdf")):
                     extract_pdf(uploaded_file)
                 st.session_state.processed_upload_signature = signature
                 st.success(st.session_state.upload_message)
             except PdfExtractionError as exc:
-                st.error(f"PDF extraction failed: {exc}")
+                st.error(f"{t('pdf_extraction_failed')}: {exc}")
             except Exception as exc:
-                st.error(f"Could not process PDF safely: {exc}")
+                st.error(f"{t('pdf_process_failed')}: {exc}")
 
-    if uploaded_file is not None and st.button("Reprocess PDF"):
+    if uploaded_file is not None and st.button(t("reprocess_pdf")):
         try:
-            with st.spinner("Extracting text from your PDF..."):
+            with st.spinner(t("extracting_pdf")):
                 extract_pdf(uploaded_file)
             st.session_state.processed_upload_signature = uploaded_file_signature(uploaded_file)
             st.success(st.session_state.upload_message)
         except PdfExtractionError as exc:
-            st.error(f"PDF extraction failed: {exc}")
+            st.error(f"{t('pdf_extraction_failed')}: {exc}")
         except Exception as exc:
-            st.error(f"Could not process PDF safely: {exc}")
+            st.error(f"{t('pdf_process_failed')}: {exc}")
 
 
 def render_folder_upload() -> None:
     uploaded_files = st.file_uploader(
-        "Choose a folder that contains PDFs",
+        t("choose_pdf_folder"),
         type=["pdf"],
         accept_multiple_files="directory",
     )
     if not uploaded_files:
-        st.info("Upload a folder, then choose one PDF from the uploaded files.")
+        st.info(t("folder_upload_help"))
         return
 
     uploaded_files = sorted(uploaded_files, key=lambda file: file.name.lower())
     labels = [file.name for file in uploaded_files]
-    selected_label = st.selectbox("Choose a PDF from the uploaded folder", labels)
+    selected_label = st.selectbox(t("choose_pdf_from_folder"), labels)
     selected_file = uploaded_files[labels.index(selected_label)]
-    st.caption(f"{len(uploaded_files)} PDF file(s) uploaded from the folder.")
+    st.caption(t("pdfs_uploaded_from_folder", count=len(uploaded_files)))
 
     signature = uploaded_file_signature(selected_file)
-    button_label = "Reprocess selected PDF" if st.session_state.processed_upload_signature == signature else "Process selected PDF"
+    button_label = (
+        t("reprocess_selected_pdf")
+        if st.session_state.processed_upload_signature == signature
+        else t("process_selected_pdf")
+    )
     if st.button(button_label, type="primary"):
         try:
-            with st.spinner("Extracting text from your PDF..."):
+            with st.spinner(t("extracting_pdf")):
                 extract_pdf(selected_file)
             st.session_state.processed_upload_signature = signature
             st.success(st.session_state.upload_message)
         except PdfExtractionError as exc:
-            st.error(f"PDF extraction failed: {exc}")
+            st.error(f"{t('pdf_extraction_failed')}: {exc}")
         except Exception as exc:
-            st.error(f"Could not process PDF safely: {exc}")
+            st.error(f"{t('pdf_process_failed')}: {exc}")
 
 
 def render_pending_study_plan() -> None:
@@ -87,27 +98,28 @@ def render_pending_study_plan() -> None:
         )
         max_sessions = 15
         selected = st.number_input(
-            "Number of Study Sessions",
+            t("number_of_study_sessions"),
             min_value=3,
             max_value=max_sessions,
             value=max(3, min(max_sessions, int(st.session_state.selected_session_count or suggested or 5))),
-            help="Suggested based on PDF length. You can change it.",
+            help=t("session_count_help"),
         )
         st.session_state.selected_session_count = int(selected)
         draft_sections = StudyService().generate_study_plan_for_sessions(
             st.session_state.pending_pages,
             st.session_state.selected_session_count,
+            language=current_language(),
         )
         st.session_state.pending_sections = draft_sections
         estimated = sum(section.estimated_minutes for section in draft_sections)
         cols = st.columns(3)
-        cols[0].metric("Pages processed", len(st.session_state.pending_pages))
-        cols[1].metric("Suggested sessions", suggested)
-        cols[2].metric("Estimated study time", f"{estimated} min")
+        cols[0].metric(t("pages_processed"), len(st.session_state.pending_pages))
+        cols[1].metric(t("suggested_sessions"), suggested)
+        cols[2].metric(t("estimated_study_time"), f"{estimated} {t('minutes')}")
         st.caption(
-            f"Suggested sessions: {suggested}. Your study plan will use {len(draft_sections)} study sessions."
+            t("study_plan_session_caption", suggested=suggested, count=len(draft_sections))
         )
-        if st.button("Generate Study Plan", type="primary"):
+        if st.button(t("generate_study_plan"), type="primary"):
             try:
                 generate_study_plan_from_pending()
                 st.success(st.session_state.upload_message)
