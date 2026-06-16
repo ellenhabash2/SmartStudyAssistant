@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import streamlit as st
 
+from translations import current_language, rtl_css
+
 
 def inject_custom_css() -> None:
+    dynamic_rtl_css = rtl_css(current_language())
     st.markdown(
         """
         <style>
+        """
+        + dynamic_rtl_css
+        + """
         :root {
             --app-bg: #F4F7FB;
             --surface: #FFFFFF;
@@ -49,6 +55,10 @@ def inject_custom_css() -> None:
             font-weight: 800;
             font-size: 1.05rem;
             white-space: nowrap;
+        }
+        .top-nav div[data-testid="stHorizontalBlock"]:first-of-type {
+            align-items: end;
+            margin-bottom: .35rem;
         }
         .nav-active {
             display: flex;
@@ -100,6 +110,11 @@ def inject_custom_css() -> None:
             border-left: 5px solid var(--accent);
             position: relative;
         }
+        [dir="rtl"] .roadmap-card,
+        .stApp[dir="rtl"] .roadmap-card {
+            border-left: 1px solid var(--border);
+            border-right: 5px solid var(--accent);
+        }
         .roadmap-index {
             width: 2rem;
             height: 2rem;
@@ -112,7 +127,14 @@ def inject_custom_css() -> None:
             font-weight: 800;
             margin-right: .45rem;
         }
+        [dir="rtl"] .roadmap-index,
+        .stApp[dir="rtl"] .roadmap-index {
+            margin-right: 0;
+            margin-left: .45rem;
+        }
         .objective-list { margin: .45rem 0 .2rem 1.15rem; color: var(--text-main); }
+        [dir="rtl"] .objective-list,
+        .stApp[dir="rtl"] .objective-list { margin: .45rem 1.15rem .2rem 0; }
         .badge {
             display: inline-block;
             border-radius: 8px;
@@ -120,6 +142,11 @@ def inject_custom_css() -> None:
             font-weight: 700;
             font-size: .75rem;
             margin-right: .25rem;
+        }
+        [dir="rtl"] .badge,
+        .stApp[dir="rtl"] .badge {
+            margin-right: 0;
+            margin-left: .25rem;
         }
         .badge-primary { background: var(--primary-soft); color: var(--primary); }
         .badge-secondary { background: #E9EEF5; color: #38485A; }
@@ -137,6 +164,10 @@ def inject_custom_css() -> None:
             padding: .16rem .48rem;
             margin: .16rem .18rem .16rem 0;
             font-size: .75rem;
+        }
+        [dir="rtl"] .tag,
+        .stApp[dir="rtl"] .tag {
+            margin: .16rem 0 .16rem .18rem;
         }
         .prompt-card {
             background: var(--surface);

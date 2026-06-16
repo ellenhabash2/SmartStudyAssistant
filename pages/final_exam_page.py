@@ -6,37 +6,42 @@ from typing import Any
 import streamlit as st
 
 from services.exam_grading_service import ExamGradingService
+from translations import current_language, t
 from ui.components import card
 from ui.state import has_pdf, persist_current_state
 from ui.workflow import generate_final_exam
 
 
 def render_final_exam() -> None:
-    st.subheader("Final Exam")
+    st.subheader(t("final_exam"))
     if not has_pdf():
-        st.info("Upload and process a PDF first.")
+        st.info(t("upload_pdf_first"))
         return
 
     cols = st.columns(2)
-    question_count = cols[0].number_input("Questions", min_value=3, max_value=25, value=10)
-    difficulty = cols[1].selectbox("Difficulty", ["mixed", "easy", "medium", "hard"])
-    if st.button("Generate AI final exam", type="primary"):
-        with st.spinner("Generating final exam..."):
+    question_count = cols[0].number_input(t("questions"), min_value=3, max_value=25, value=10)
+    difficulty = cols[1].selectbox(
+        t("difficulty"),
+        ["mixed", "easy", "medium", "hard"],
+        format_func=lambda value: t(f"difficulty_{value}"),
+    )
+    if st.button(t("generate_final_exam"), type="primary"):
+        with st.spinner(t("generating_final_exam")):
             st.session_state.final_exam = generate_final_exam(int(question_count), difficulty)
             st.session_state.final_exam_answers = {}
             st.session_state.final_exam_result = None
             persist_current_state()
-        st.success("Final exam generated.")
+        st.success(t("final_exam_generated"))
 
     exam = st.session_state.final_exam
     if not exam:
-        st.info("Generate a final exam when you finish reviewing the study plan.")
+        st.info(t("generate_exam_hint"))
         return
 
     if exam.get("fallback_used"):
-        st.warning(exam.get("fallback_note", "Fallback exam was used."))
+        st.warning(exam.get("fallback_note", t("fallback_exam_used")))
 
-    st.markdown(f"### {exam.get('title', 'AI Final Exam')}")
+    st.markdown(f"### {exam.get('title', t('ai_final_exam'))}")
     render_exam_form(exam)
     render_exam_result()
 
@@ -53,9 +58,9 @@ def render_exam_form(exam: dict[str, Any]) -> None:
             st.markdown(f"**{question_id}. {question.get('question', '')}**")
 
             if question_type in {"multiple_choice", "true_false"} and (question.get("options") or question_type == "true_false"):
-                options = question.get("options") or (["True", "False"] if question_type == "true_false" else [])
+                options = question.get("options") or ([t("true"), t("false")] if question_type == "true_false" else [])
                 answers[question_id] = st.radio(
-                    "Answer",
+                    t("answer"),
                     options,
                     key=answer_key,
                     label_visibility="collapsed",
@@ -63,14 +68,14 @@ def render_exam_form(exam: dict[str, Any]) -> None:
                 )
             else:
                 answers[question_id] = st.text_area(
-                    "Short answer",
+                    t("short_answer"),
                     key=answer_key,
                     label_visibility="collapsed",
                     height=90,
                 )
-            st.caption(f"Topic: {question.get('topic', 'Review')}")
+            st.caption(f"{t('topic')}: {question.get('topic', t('review'))}")
 
-        submitted = st.form_submit_button("Submit Exam", type="primary")
+        submitted = st.form_submit_button(t("submit_exam"), type="primary")
 
     if submitted:
         st.session_state.final_exam_answers = {key: value for key, value in answers.items() if value is not None}
@@ -78,13 +83,14 @@ def render_exam_form(exam: dict[str, Any]) -> None:
             exam,
             st.session_state.final_exam_answers,
             st.session_state.sections,
+            language=current_language(),
         )
         st.session_state.final_exam_result = result
         st.session_state.progress.final_exam_score = float(result["score"])
         st.session_state.progress.weak_topics = result["weak_topics"]
         st.session_state.progress.weak_sections = result["weak_sections"]
         persist_current_state()
-        st.success("Final exam submitted.")
+        st.success(t("final_exam_submitted"))
 
 
 def render_exam_result() -> None:
@@ -93,47 +99,47 @@ def render_exam_result() -> None:
         return
 
     cols = st.columns(3)
-    cols[0].metric("Score", f"{result['score']}%")
-    cols[1].metric("Correct answers", result["correct_count"])
-    cols[2].metric("Wrong answers", result["wrong_count"])
+    cols[0].metric(t("score"), f"{result['score']}%")
+    cols[1].metric(t("correct_answers"), result["correct_count"])
+    cols[2].metric(t("wrong_answers"), result["wrong_count"])
 
     weak_sections = result.get("weak_sections", [])
     weak_topics = result.get("weak_topics", [])
     if weak_sections:
-        card("Related weak sections", html.escape(", ".join(weak_sections)))
+        card(t("related_weak_sections"), html.escape(", ".join(weak_sections)))
     elif weak_topics:
-        card("Weak topics", html.escape(", ".join(weak_topics)))
+        card(t("weak_topics"), html.escape(", ".join(weak_topics)))
 
-    card("Recommendation", html.escape(result.get("recommendation", "Review your missed questions.")))
+    card(t("recommendation"), html.escape(result.get("recommendation", t("review_missed_default"))))
 
     missed = [item for item in result.get("results", []) if not item.get("is_correct")]
     if not missed:
-        st.success("All answers were correct.")
+        st.success(t("all_answers_correct"))
         return
 
-    st.markdown("**Review missed answers**")
+    st.markdown(f"**{t('review_missed_answers')}**")
 
     for item in missed:
-        related = f"Related section: {item['related_section']}" if item.get("related_section") else ""
+        related = f"{t('related_section')}: {item['related_section']}" if item.get("related_section") else ""
 
         with st.container(border=True):
             st.markdown(f"**❌ Q{item['id']}: {item.get('question', '')}**")
 
-            st.markdown("**Your answer:**")
-            st.write(item.get("user_answer") or "No answer provided.")
+            st.markdown(f"**{t('your_answer')}**")
+            st.write(item.get("user_answer") or t("no_answer_provided"))
 
-            st.markdown("**Correct answer:**")
-            st.write(item.get("expected_answer") or "No expected answer available.")
+            st.markdown(f"**{t('correct_answer')}**")
+            st.write(item.get("expected_answer") or t("no_expected_answer"))
 
             if item.get("feedback"):
-                st.markdown("**Feedback:**")
+                st.markdown(f"**{t('feedback')}**")
                 st.write(item["feedback"])
 
             if related:
                 st.caption(related)
 
             if item.get("related_section"):
-                if st.button("Review section", key=f"review-section-{item['id']}"):
+                if st.button(t("review_section"), key=f"review-section-{item['id']}"):
                     go_to_section(item["related_section"])
 
 

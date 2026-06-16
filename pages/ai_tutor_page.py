@@ -4,41 +4,44 @@ import html
 
 import streamlit as st
 
+from translations import t
 from ui.state import current_section, has_pdf, persist_current_state, section_state
 from ui.workflow import answer_ai_tutor, answer_section_question
 
 
 def render_ai_tutor() -> None:
-    st.subheader("AI Tutor")
+    st.subheader(t("ai_tutor"))
+    mode_options = ["general", "section"]
     mode = st.radio(
         "Mode",
-        ["General AI Tutor", "Ask about current section"],
+        mode_options,
+        format_func=lambda value: t("ai_tutor_mode_general") if value == "general" else t("ai_tutor_mode_section"),
         horizontal=True,
         label_visibility="collapsed",
     )
 
-    if mode == "General AI Tutor":
+    if mode == "general":
         render_general_tutor()
     else:
         render_current_section_tutor()
 
 
 def render_general_tutor() -> None:
-    st.caption("Ask general study questions, request examples, or get help understanding a topic.")
+    st.caption(t("ai_tutor_caption"))
     prompts = [
-        "Explain recursion with an example",
-        "Help me prepare for an algorithms exam",
-        "Explain Big O notation simply",
-        "Create practice questions",
+        t("prompt_recursion"),
+        t("prompt_algorithms_exam"),
+        t("prompt_big_o"),
+        t("prompt_practice_questions"),
     ]
     prompt_cols = st.columns(4)
     for index, prompt_text in enumerate(prompts):
         with prompt_cols[index]:
             st.markdown(f"<div class='prompt-card'>{html.escape(prompt_text)}</div>", unsafe_allow_html=True)
 
-    use_pdf_context = st.checkbox("Use uploaded PDF context", value=has_pdf(), disabled=not has_pdf())
+    use_pdf_context = st.checkbox(t("use_pdf_context"), value=has_pdf(), disabled=not has_pdf())
 
-    if st.button("Clear Chat"):
+    if st.button(t("clear_chat")):
         st.session_state.ai_tutor_history = []
         persist_current_state()
         st.rerun()
@@ -47,7 +50,7 @@ def render_general_tutor() -> None:
         with st.chat_message(message["role"]):
             st.write(message["content"])
 
-    prompt = st.chat_input("Ask a general study question")
+    prompt = st.chat_input(t("ask_general_question"))
     if prompt:
         with st.chat_message("user"):
             st.write(prompt)
@@ -55,7 +58,7 @@ def render_general_tutor() -> None:
         with st.chat_message("assistant"):
             st.write(result["answer"])
             if result["provider"] != "none":
-                st.caption(f"Provider: {result['provider']}")
+                st.caption(f"{t('provider')}: {result['provider']}")
         st.session_state.ai_tutor_history.extend(
             [{"role": "user", "content": prompt}, {"role": "assistant", "content": result["answer"]}]
         )
@@ -65,22 +68,22 @@ def render_general_tutor() -> None:
 def render_current_section_tutor() -> None:
     section = current_section()
     if section is None:
-        st.info("Generate a study plan first.")
+        st.info(t("generate_plan_first"))
         return
 
     state = section_state(section)
-    st.caption(f"Current section: {section.title}")
+    st.caption(t("current_section_label", title=section.title))
     question_key = f"ai-tutor-section-question-{section.section_number}"
     st.session_state.setdefault(question_key, state.get("question", ""))
     with st.form(key=f"ai-tutor-section-form-{section.section_number}"):
-        question = st.text_area("Question", key=question_key, height=100)
-        submitted = st.form_submit_button("Ask About This Section", type="primary")
+        question = st.text_area(t("question"), key=question_key, height=100)
+        submitted = st.form_submit_button(t("ask_about_section"), type="primary")
 
     if submitted:
         if not question.strip():
-            st.warning("Enter a question first.")
+            st.warning(t("enter_question_first"))
         else:
-            with st.spinner("Reading the current section..."):
+            with st.spinner(t("reading_section")):
                 state["question"] = question
                 state["answer"] = answer_section_question(section, question)
                 persist_current_state()

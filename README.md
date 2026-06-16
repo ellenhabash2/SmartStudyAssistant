@@ -21,6 +21,8 @@ Updated proposal documents:
 
 ## Current MVP Features
 
+- Switch the full application between English and Hebrew from the top navigation.
+- Apply RTL layout automatically when Hebrew is selected.
 - Upload a PDF and extract text with PyMuPDF plus pypdf fallback.
 - Generate a readable study plan with a suggested number of study sessions based on PDF size.
 - Adjust the number of sessions before creating the final study plan.
@@ -30,6 +32,17 @@ Updated proposal documents:
 - Ask general study questions in the AI Tutor.
 - Generate a final exam from the study material with safe fallback behavior when AI output is unavailable or malformed.
 - Track completed sections, quiz averages, study time, weak-topic recommendations, and final exam score.
+
+## Bilingual Support
+
+The app supports English and Hebrew throughout the student workflow. Use the language selector in the top navigation to switch at any time:
+
+- `English 🇺🇸`
+- `עברית 🇮🇱`
+
+The selected language is stored in Streamlit session state as `st.session_state.language`. UI labels, navigation, status messages, dashboard text, study plans, tutor prompts, quiz generation, final exam generation, and fallback messages use the active language.
+
+Hebrew mode applies right-to-left layout and right-aligned text dynamically. New generated study plans, section quizzes, AI Tutor responses, and final exams are instructed to use the selected language.
 
 ## Project Architecture
 
@@ -62,6 +75,8 @@ services/
 
 core/
   models.py             Shared document models
+
+translations.py         English/Hebrew translation table and language helpers
 
 research/
   Legacy RAG, LangChain, benchmark, vector store, embedding, and experiment code.

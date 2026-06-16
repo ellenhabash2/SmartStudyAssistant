@@ -8,6 +8,7 @@ from services.persistence_service import PersistenceService
 from services.progress_service import ProgressService
 from services.section_state_service import SectionStateService
 from services.study_service import StudySection, StudyService
+from translations import DEFAULT_LANGUAGE, normalize_language, t
 from ui.navigation import DEFAULT_CURRENT_PAGE, normalize_current_page
 
 
@@ -33,6 +34,7 @@ def init_state() -> None:
         "final_exam_result": None,
         "weak_topic_review": "",
         "current_page": DEFAULT_CURRENT_PAGE,
+        "language": DEFAULT_LANGUAGE,
         "progress": ProgressService.default_state(),
         "persistence_loaded": False,
     }
@@ -43,6 +45,7 @@ def init_state() -> None:
     restore_saved_state()
     st.session_state.progress = ProgressService.load(st.session_state.progress)
     st.session_state.current_page = normalize_current_page(st.session_state.get("current_page"))
+    st.session_state.language = normalize_language(st.session_state.get("language"))
     st.session_state.sections = normalize_study_sections(st.session_state.sections)
     st.session_state.pending_sections = normalize_study_sections(st.session_state.pending_sections)
     st.session_state.section_states = SectionStateService.ensure_states(
@@ -140,18 +143,24 @@ def section_context(section: StudySection) -> str:
 
 def source_label(section: StudySection, page: int | None = None) -> str:
     if page is not None:
-        return f"Source: Section {section.section_number}, Page {page}"
+        return t("source_section_page", section=section.section_number, page=page)
     if section.start_page == section.end_page:
-        return f"Source: Page {section.start_page}"
-    return f"Source: Pages {section.start_page}-{section.end_page}"
+        return t("source_page", page=section.start_page)
+    return t("source_pages", start=section.start_page, end=section.end_page)
+
+
+def page_label(section: StudySection) -> str:
+    if section.start_page == section.end_page:
+        return t("page_label_one", page=section.start_page)
+    return t("page_label_range", start=section.start_page, end=section.end_page)
 
 
 def format_seconds(seconds: int) -> str:
     minutes, remainder = divmod(max(0, int(seconds)), 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m {remainder}s"
+        return f"{hours}h {minutes}m" if st.session_state.get("language") != "he" else f"{hours}ש {minutes}ד"
+    return f"{minutes}m {remainder}s" if st.session_state.get("language") != "he" else f"{minutes}ד {remainder}ש"
 
 
 def overall_progress() -> float:

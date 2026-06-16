@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from translations import normalize_language, study_plan_language_instruction
+
 
 @dataclass(frozen=True)
 class StudySection:
@@ -45,7 +47,17 @@ class StudyService:
         "metadata",
     }
 
-    def generate_study_plan(self, pages: list[Any], pages_per_section: int = 2) -> list[StudySection]:
+    @staticmethod
+    def build_study_plan_prompt(language: str = "en") -> str:
+        return study_plan_language_instruction(language)
+
+    def generate_study_plan(
+        self,
+        pages: list[Any],
+        pages_per_section: int = 2,
+        language: str = "en",
+    ) -> list[StudySection]:
+        language = normalize_language(language)
         usable_pages = [page for page in pages if (getattr(page, "text", "") or "").strip()]
         if not usable_pages:
             return []
@@ -60,19 +72,25 @@ class StudyService:
             sections.append(
                 StudySection(
                     section_number=len(sections) + 1,
-                    title=self._title(group, len(sections) + 1, start_page, end_page),
+                    title=self._title(group, len(sections) + 1, start_page, end_page, language),
                     start_page=start_page,
                     end_page=end_page,
                     estimated_minutes=self._estimated_minutes(text),
                     difficulty=self._difficulty(text),
-                    summary=self._summary(text, start_page, end_page),
-                    learning_objectives=self._learning_objectives(text, concepts, start_page, end_page),
+                    summary=self._summary(text, start_page, end_page, language),
+                    learning_objectives=self._learning_objectives(text, concepts, start_page, end_page, language),
                     key_concepts=concepts,
                 )
             )
         return sections
 
-    def generate_study_plan_for_sessions(self, pages: list[Any], session_count: int) -> list[StudySection]:
+    def generate_study_plan_for_sessions(
+        self,
+        pages: list[Any],
+        session_count: int,
+        language: str = "en",
+    ) -> list[StudySection]:
+        language = normalize_language(language)
         usable_pages = [page for page in pages if (getattr(page, "text", "") or "").strip()]
         if not usable_pages:
             return []
@@ -93,13 +111,13 @@ class StudyService:
             sections.append(
                 StudySection(
                     section_number=len(sections) + 1,
-                    title=self._title(group, len(sections) + 1, start_page, end_page),
+                    title=self._title(group, len(sections) + 1, start_page, end_page, language),
                     start_page=start_page,
                     end_page=end_page,
                     estimated_minutes=self._estimated_minutes(text),
                     difficulty=self._difficulty(text),
-                    summary=self._summary(text, start_page, end_page),
-                    learning_objectives=self._learning_objectives(text, concepts, start_page, end_page),
+                    summary=self._summary(text, start_page, end_page, language),
+                    learning_objectives=self._learning_objectives(text, concepts, start_page, end_page, language),
                     key_concepts=concepts,
                 )
             )
@@ -160,19 +178,29 @@ class StudyService:
             return 0
         return min(max(0, current_index) + 1, total_sections - 1)
 
-    def _title(self, pages: list[Any], section_number: int, start_page: int, end_page: int) -> str:
+    def _title(
+        self,
+        pages: list[Any],
+        section_number: int,
+        start_page: int,
+        end_page: int,
+        language: str = "en",
+    ) -> str:
+        section_prefix = "חלק" if normalize_language(language) == "he" else "Section"
         for page in pages:
             for raw_line in (getattr(page, "text", "") or "").splitlines()[:12]:
                 line = self._clean(raw_line)
                 if self._looks_like_heading(line):
                     title = self._title_case(line)
                     if self._is_meaningful_title(title):
-                        return f"Section {section_number}: {title}"
+                        return f"{section_prefix} {section_number}: {title}"
 
         text = self._clean(" ".join(getattr(page, "text", "") or "" for page in pages))
         concepts = self._key_concepts(text)
         if concepts:
-            return f"Section {section_number}: {', '.join(concepts[:2])}"
+            return f"{section_prefix} {section_number}: {', '.join(concepts[:2])}"
+        if normalize_language(language) == "he":
+            return f"חלק {section_number}: עמודים {start_page}-{end_page}"
         return f"Section {section_number}: Pages {start_page}-{end_page}"
 
     @staticmethod
@@ -201,7 +229,7 @@ class StudyService:
         return True
 
     def _key_concepts(self, text: str, limit: int = 5) -> list[str]:
-        words = re.findall(r"[A-Za-z][A-Za-z0-9-]{4,}", text)
+        words = re.findall(r"[A-Za-z\u0590-\u05FF][A-Za-z0-9\u0590-\u05FF-]{4,}", text)
         counts: dict[str, int] = {}
         display: dict[str, str] = {}
         positions: dict[str, int] = {}
@@ -216,7 +244,7 @@ class StudyService:
         return [display[key] for key in ranked[:limit]]
 
     @staticmethod
-    def _summary(text: str, start_page: int, end_page: int) -> str:
+    def _summary(text: str, start_page: int, end_page: int, language: str = "en") -> str:
         sentences = []
         for sentence in re.split(r"(?<=[.!?])\s+", text):
             cleaned = re.sub(r"\s+", " ", sentence or "").strip()
@@ -230,12 +258,35 @@ class StudyService:
             sentences.append(cleaned)
         if sentences:
             summary = " ".join(sentences[:3])
+        elif normalize_language(language) == "he":
+            summary = f"למדו את הרעיונות המרכזיים והדוגמאות מעמודים {start_page}-{end_page}."
         else:
             summary = f"Study the main ideas and examples from pages {start_page}-{end_page}."
         return summary[:420].rstrip() + ("..." if len(summary) > 420 else "")
 
     @staticmethod
-    def _learning_objectives(text: str, concepts: list[str], start_page: int, end_page: int) -> list[str]:
+    def _learning_objectives(
+        text: str,
+        concepts: list[str],
+        start_page: int,
+        end_page: int,
+        language: str = "en",
+    ) -> list[str]:
+        if normalize_language(language) == "he":
+            selected = concepts[:4]
+            if selected:
+                objectives = [f"להסביר את {concept} בעזרת הדוגמאות בחלק." for concept in selected[:2]]
+                if len(selected) >= 3:
+                    objectives.append(f"להשוות כיצד {selected[1]} ו-{selected[2]} מופיעים בחומר.")
+                objectives.append(f"לסכם את הרעיון המרכזי מעמודים {start_page}-{end_page}.")
+            else:
+                objectives = [
+                    f"לסכם את הרעיונות המרכזיים מעמודים {start_page}-{end_page}.",
+                    "לזהות מונחים או דוגמאות שסביר שיופיעו בשאלון.",
+                    "להסביר את החלק במילים שלכם בלי להסתכל ב-PDF.",
+                ]
+            return objectives[:5]
+
         selected = concepts[:4]
         if selected:
             objectives = [f"Explain {concept} using the section examples." for concept in selected[:2]]

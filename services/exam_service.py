@@ -9,12 +9,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.general_ai_service import GeneralAIService
+from translations import exam_language_instruction, normalize_language, translate
 
 
 @dataclass(frozen=True)
 class ExamOptions:
     question_count: int = 10
     difficulty: str = "mixed"
+    language: str = "en"
 
 
 class ExamService:
@@ -22,26 +24,35 @@ class ExamService:
 
     def generate_final_exam(self, study_context: str, options: ExamOptions | None = None) -> dict[str, Any]:
         options = options or ExamOptions()
+        options = ExamOptions(
+            question_count=options.question_count,
+            difficulty=options.difficulty,
+            language=normalize_language(options.language),
+        )
         context = (study_context or "").strip()
         if not context:
-            return self._fallback_exam("No study context was available.", options)
+            note = "לא היה הקשר לימודי זמין." if options.language == "he" else "No study context was available."
+            return self._fallback_exam(note, options)
 
         try:
             raw = self._call_ai(context, options)
             return self.normalize_payload(self.parse_json(raw), options)
         except Exception as exc:
-            return self._fallback_exam(f"AI exam generation fell back safely: {exc}", options)
+            note = (
+                f"יצירת מבחן AI עברה בבטחה למבחן גיבוי: {exc}"
+                if options.language == "he"
+                else f"AI exam generation fell back safely: {exc}"
+            )
+            return self._fallback_exam(note, options)
 
-    def _call_ai(self, context: str, options: ExamOptions) -> str:
-        provider = GeneralAIService().select_provider()
-        if provider is None:
-            raise RuntimeError("Set OPENAI_API_KEY or GROQ_API_KEY for AI-generated final exams.")
-
+    @staticmethod
+    def build_exam_prompt(context: str, options: ExamOptions) -> str:
+        language = normalize_language(options.language)
         seed = random.randint(1000, 999999)
-
-        prompt = (
+        return (
             "Create a final exam from this study material. Return JSON only with keys "
             "title, questions, answer_key. Each question needs id, type, question, options, answer, topic.\n\n"
+            f"{exam_language_instruction(language)}\n"
             "Use only these question types: multiple_choice, true_false, short_answer.\n"
             "Create a different version each time while staying based only on the material.\n"
             f"Variation seed: {seed}\n"
@@ -49,6 +60,13 @@ class ExamService:
             f"Difficulty: {options.difficulty}\n"
             f"Study material:\n{context[:12000]}"
         )
+
+    def _call_ai(self, context: str, options: ExamOptions) -> str:
+        provider = GeneralAIService().select_provider()
+        if provider is None:
+            raise RuntimeError("Set OPENAI_API_KEY or GROQ_API_KEY for AI-generated final exams.")
+
+        prompt = self.build_exam_prompt(context, options)
         messages = [
             {"role": "system", "content": "Return valid JSON only. Do not wrap output in Markdown."},
             {"role": "user", "content": prompt},
@@ -134,34 +152,57 @@ class ExamService:
             answer_key = [{"id": item["id"], "answer": item["answer"]} for item in normalized_questions]
 
         return {
-            "title": str(payload.get("title", "AI Final Exam")),
+            "title": str(payload.get("title", translate("ai_final_exam", options.language))),
             "questions": normalized_questions[: max(1, min(options.question_count, 25))],
             "answer_key": answer_key,
             "fallback_used": bool(payload.get("fallback_used", False)),
         }
 
     def _fallback_exam(self, note: str, options: ExamOptions) -> dict[str, Any]:
+        language = normalize_language(options.language)
         count = max(1, min(options.question_count, 10))
         types = ["multiple_choice", "true_false", "short_answer"]
         questions = [
             {
                 "id": index,
                 "type": types[(index - 1) % len(types)],
-                "question": f"Review question {index}: explain or identify one important idea from the study material.",
-                "options": ["A key idea from the PDF", "An unrelated topic", "A random definition", "None of the above"]
-                if types[(index - 1) % len(types)] == "multiple_choice"
-                else ["True", "False"] if types[(index - 1) % len(types)] == "true_false" else [],
-                "answer": "A key idea from the PDF" if types[(index - 1) % len(types)] == "multiple_choice"
-                else "True" if types[(index - 1) % len(types)] == "true_false"
-                else "Use your section notes and explanations to support the answer.",
-                "topic": "Review",
+                "question": self._fallback_question(index, language),
+                "options": self._fallback_options(types[(index - 1) % len(types)], language),
+                "answer": self._fallback_answer(types[(index - 1) % len(types)], language),
+                "topic": translate("review", language),
             }
             for index in range(1, count + 1)
         ]
         return {
-            "title": "AI Final Exam",
+            "title": translate("ai_final_exam", language),
             "questions": questions,
             "answer_key": [{"id": item["id"], "answer": item["answer"]} for item in questions],
             "fallback_used": True,
             "fallback_note": note,
         }
+
+    @staticmethod
+    def _fallback_question(index: int, language: str) -> str:
+        if normalize_language(language) == "he":
+            return f"שאלת חזרה {index}: הסבירו או זהו רעיון חשוב אחד מחומר הלימוד."
+        return f"Review question {index}: explain or identify one important idea from the study material."
+
+    @staticmethod
+    def _fallback_options(question_type: str, language: str) -> list[str]:
+        if question_type == "multiple_choice":
+            if normalize_language(language) == "he":
+                return ["רעיון מרכזי מה-PDF", "נושא לא קשור", "הגדרה אקראית", "אף תשובה אינה נכונה"]
+            return ["A key idea from the PDF", "An unrelated topic", "A random definition", "None of the above"]
+        if question_type == "true_false":
+            return [translate("true", language), translate("false", language)]
+        return []
+
+    @staticmethod
+    def _fallback_answer(question_type: str, language: str) -> str:
+        if question_type == "multiple_choice":
+            return "רעיון מרכזי מה-PDF" if normalize_language(language) == "he" else "A key idea from the PDF"
+        if question_type == "true_false":
+            return translate("true", language)
+        if normalize_language(language) == "he":
+            return "השתמשו בהערות ובהסברים מהחלקים כדי לתמוך בתשובה."
+        return "Use your section notes and explanations to support the answer."
