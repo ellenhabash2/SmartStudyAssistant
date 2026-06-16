@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import streamlit as st
 
 from services.pdf_service import PdfExtractionError
@@ -7,6 +9,19 @@ from services.study_service import StudyService
 from translations import current_language, t
 from ui.components import render_upload_hero
 from ui.workflow import extract_pdf, generate_study_plan_from_pending
+
+
+@dataclass(frozen=True)
+class StoredUploadedPdf:
+    name: str
+    data: bytes
+
+    @property
+    def size(self) -> int:
+        return len(self.data)
+
+    def getvalue(self) -> bytes:
+        return self.data
 
 
 def render_upload() -> None:
@@ -18,6 +33,7 @@ def render_upload() -> None:
         source_options,
         format_func=lambda value: t("upload_file") if value == "file" else t("upload_folder"),
         horizontal=True,
+        key="upload_source",
     )
 
     if source == "file":
@@ -61,16 +77,28 @@ def render_folder_upload() -> None:
         t("choose_pdf_folder"),
         type=["pdf"],
         accept_multiple_files="directory",
+        key="folder_pdf_uploader",
     )
-    if not uploaded_files:
+    if uploaded_files:
+        save_uploaded_folder_files(uploaded_files)
+
+    saved_files = st.session_state.uploaded_folder_files
+    if not saved_files:
         st.info(t("folder_upload_help"))
         return
 
-    uploaded_files = sorted(uploaded_files, key=lambda file: file.name.lower())
-    labels = [file.name for file in uploaded_files]
-    selected_label = st.selectbox(t("choose_pdf_from_folder"), labels)
-    selected_file = uploaded_files[labels.index(selected_label)]
-    st.caption(t("pdfs_uploaded_from_folder", count=len(uploaded_files)))
+    labels = [file["name"] for file in saved_files]
+    if st.session_state.selected_folder_pdf not in labels:
+        st.session_state.selected_folder_pdf = labels[0]
+
+    selected_label = st.selectbox(
+        t("choose_pdf_from_folder"),
+        labels,
+        index=labels.index(st.session_state.selected_folder_pdf),
+        key="selected_folder_pdf",
+    )
+    selected_file = stored_uploaded_pdf(saved_files[labels.index(selected_label)])
+    st.caption(t("pdfs_uploaded_from_folder", count=len(saved_files)))
 
     signature = uploaded_file_signature(selected_file)
     button_label = (
@@ -98,6 +126,7 @@ def render_pending_study_plan() -> None:
             st.session_state.pending_pdf_bytes = b""
             st.session_state.pending_pdf_name = ""
             st.session_state.processed_upload_signature = ""
+            st.session_state.upload_source = "folder" if st.session_state.uploaded_folder_files else "file"
             st.rerun()
 
         readable_pages = StudyService.readable_page_count(st.session_state.pending_pages)
@@ -139,3 +168,24 @@ def render_pending_study_plan() -> None:
 
 def uploaded_file_signature(uploaded_file) -> str:
     return f"{uploaded_file.name}:{uploaded_file.size}"
+
+
+def save_uploaded_folder_files(uploaded_files) -> None:
+    saved = [
+        {
+            "name": uploaded_file.name,
+            "data": uploaded_file.getvalue(),
+        }
+        for uploaded_file in sorted(uploaded_files, key=lambda file: file.name.lower())
+    ]
+    st.session_state.uploaded_folder_files = saved
+    labels = [item["name"] for item in saved]
+    if labels and st.session_state.selected_folder_pdf not in labels:
+        st.session_state.selected_folder_pdf = labels[0]
+
+
+def stored_uploaded_pdf(payload: dict[str, bytes | str]) -> StoredUploadedPdf:
+    return StoredUploadedPdf(
+        name=str(payload["name"]),
+        data=bytes(payload["data"]),
+    )
