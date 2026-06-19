@@ -138,58 +138,110 @@ def generate_explanation(section: StudySection) -> str:
         f"_Offline fallback explanation_\n\n{source_label(section)}"
     )
 
+def relevant_document_context(question: str, current_section: StudySection, max_chars: int = 12000) -> tuple[str, list[int]]:
+    stop_words = {
+        "what", "are", "the", "for", "and", "that", "this", "with", "from",
+        "does", "have", "into", "about", "which", "when", "where", "why",
+        "how", "is", "a", "an", "of", "to", "in", "on",
+    }
 
-def answer_section_question(section: StudySection, question: str) -> str:
-    text = section_context(section)
-    language = current_language()
-    response = GeneralAIService().ask(
-        [{"role": "user", "content": f"{tutor_language_instruction(language)}\nUse this study section as context when helpful:\n{text[:5000]}"}],
-        question,
-        language=language,
-    )
+    question_terms = {
+        token
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", question.lower())
+        if token not in stop_words
+    }
 
-    if response["ok"]:
-        return f"{response['answer']}\n\n{source_label(section)}"
+    ranked_pages: list[tuple[int, int, str]] = []
 
-    if not text.strip():
-        if language == "he":
-            return (
-                "לא מצאתי עדיין טקסט קריא לחלק הזה. העלו מחדש את ה-PDF, בדקו שלחלק יש "
-                "טקסט ניתן לחילוץ, ואז שאלו על מונח או דוגמה ספציפיים מהעמוד."
-            )
-        return (
-            "I could not find readable text for this section yet. Re-open the PDF, check that this section has "
-            "extractable text, then ask about a specific term or example from the page."
-        )
+    for page in st.session_state.pages:
+        page_text = (getattr(page, "text", "") or "").strip()
+        if not page_text:
+            continue
 
-    question_words = set(re.findall(r"[A-Za-z0-9]+", question.lower()))
-    sentences = [item.strip() + "." for item in text.replace("\n", " ").split(".") if len(item.split()) > 6]
+        page_number = int(getattr(page, "page_number", 0) or 0)
+        page_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", page_text.lower()))
+        score = len(question_terms & page_tokens)
 
-    best_sentence = sentences[0] if sentences else response.get("answer", "No text found.")
-    for sentence in sentences:
-        sentence_words = set(re.findall(r"[A-Za-z0-9]+", sentence.lower()))
-        if question_words & sentence_words:
-            best_sentence = sentence
+        if current_section.start_page <= page_number <= current_section.end_page:
+            score += 1
+
+        if score > 0:
+            ranked_pages.append((score, page_number, page_text))
+
+    ranked_pages.sort(key=lambda item: (-item[0], item[1]))
+
+    parts: list[str] = []
+    source_pages: list[int] = []
+
+    for _, page_number, page_text in ranked_pages[:8]:
+        parts.append(f"[Page {page_number}]\n{page_text}")
+        source_pages.append(page_number)
+
+        if sum(len(part) for part in parts) >= max_chars:
             break
 
-    concepts = ", ".join(section.key_concepts[:3]) or ("המושגים המרכזיים" if language == "he" else "the main concepts")
+    if not parts:
+        return "", ""
+
+    return "\n\n".join(parts)[:max_chars], source_pages
+
+def question_language(question: str, default_language: str) -> str:
+    if re.search(r"[\u0590-\u05FF]", question or ""):
+        return "he"
+
+    return default_language
+
+def answer_section_question(section: StudySection, question: str) -> str:
+    language = question_language(question, current_language())
+    section_text = section_context(section)
+    document_context, source_pages = relevant_document_context(question, section)
+
     if language == "he":
-        return (
-            f"**תשובת חלק לא מקוונת**\n\n"
-            f"מצאתי שורה קשורה בחלק הנוכחי: {best_sentence}\n\n"
-            f"השתמשו בה כדי לחזור על {concepts}. שאלות המשך טובות הן: "
-            f"\"האם אני יכול להסביר את זה במילים שלי?\", \"איזו דוגמה תומכת בזה?\", ו"
-            f"\"איך זה יכול להופיע בשאלון?\"\n\n"
-            f"{source_label(section)}"
-        )
-    return (
-        f"**Offline section answer**\n\n"
-        f"I found this related line in the current section: {best_sentence}\n\n"
-        f"Use it to review {concepts}. Good follow-up questions are: "
-        f"\"Can I explain this in my own words?\", \"What example supports it?\", and "
-        f"\"How could this appear on a quiz?\"\n\n"
-        f"{source_label(section)}"
+        fallback_message = "המסמך שהועלה אינו מכיל מספיק מידע כדי לענות על השאלה."
+    else:
+        fallback_message = "The uploaded PDF does not contain enough information to answer this question."
+
+    if not document_context.strip():
+        return fallback_message
+
+    prompt = (
+        "Answer the student's question using ONLY the uploaded PDF content below.\n"
+        "You may use the current section and other relevant pages from the same PDF.\n"
+        "Do not use outside knowledge.\n"
+        "If the answer is not clearly supported by the PDF content, respond exactly with:\n"
+        f"\"{fallback_message}\"\n\n"
+        f"{tutor_language_instruction(language)}\n\n"
+        f"Current section title: {section.title}\n"
+        f"Current section pages: {section.page_label}\n\n"
+        f"Current section text:\n{section_text[:3000]}\n\n"
+        f"Relevant uploaded PDF content:\n{document_context}\n\n"
+        f"Question:\n{question}"
     )
+
+    response = GeneralAIService().ask([], prompt, language=language)
+
+    if response["ok"]:
+        answer = response["answer"].strip()
+
+        if answer == fallback_message:
+            return answer
+
+        if source_pages:
+            source = f"Source: Pages {min(source_pages)}-{max(source_pages)}"
+        else:
+            source = source_label(section)
+
+        found_in_current_section = any(
+            section.start_page <= page <= section.end_page
+            for page in source_pages
+        )
+
+        if source_pages and not found_in_current_section:
+            return f"{answer}\n\n{source}\nNote: This answer was found outside the current study section."
+
+        return f"{answer}\n\n{source}"
+
+    return fallback_message
 
 
 def answer_ai_tutor(question: str, use_pdf_context: bool = False) -> dict[str, Any]:
