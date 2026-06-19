@@ -8,7 +8,7 @@ from services.pdf_service import PdfExtractionError
 from services.study_service import StudyService
 from translations import current_language, t
 from ui.components import render_upload_hero
-from ui.workflow import extract_pdf, generate_study_plan_from_pending
+from ui.workflow import extract_pdf, generate_study_plan_from_pending, pending_study_plan_signature
 
 
 @dataclass(frozen=True)
@@ -28,13 +28,22 @@ def render_upload() -> None:
     render_upload_hero()
     st.subheader(t("upload_pdf"))
     source_options = ["file", "folder"]
+    saved_source = st.session_state.get("upload_source", "file")
+    if saved_source not in source_options:
+        saved_source = "file"
+    if st.session_state.get("uploaded_folder_files") and saved_source == "folder":
+        st.session_state.upload_source_choice = "folder"
+    elif st.session_state.get("upload_source_choice") not in source_options:
+        st.session_state.upload_source_choice = saved_source
+
     source = st.radio(
         t("pdf_source"),
         source_options,
         format_func=lambda value: t("upload_file") if value == "file" else t("upload_folder"),
         horizontal=True,
-        key="upload_source",
+        key="upload_source_choice",
     )
+    st.session_state.upload_source = source
 
     if source == "file":
         render_file_upload()
@@ -73,6 +82,7 @@ def render_file_upload() -> None:
 
 
 def render_folder_upload() -> None:
+    st.session_state.upload_source = "folder"
     uploaded_files = st.file_uploader(
         t("choose_pdf_folder"),
         type=["pdf"],
@@ -123,10 +133,12 @@ def render_pending_study_plan() -> None:
         if st.button(t("choose_another_pdf")):
             st.session_state.pending_pages = []
             st.session_state.pending_sections = []
+            st.session_state.pending_plan_signature = ""
             st.session_state.pending_pdf_bytes = b""
             st.session_state.pending_pdf_name = ""
             st.session_state.processed_upload_signature = ""
-            st.session_state.upload_source = "folder" if st.session_state.uploaded_folder_files else "file"
+            source = "folder" if st.session_state.uploaded_folder_files else "file"
+            st.session_state.upload_source = source
             st.rerun()
 
         readable_pages = StudyService.readable_page_count(st.session_state.pending_pages)
@@ -142,12 +154,22 @@ def render_pending_study_plan() -> None:
             help=t("session_count_help"),
         )
         st.session_state.selected_session_count = int(selected)
-        draft_sections = StudyService().generate_study_plan_for_sessions(
+        signature = pending_study_plan_signature(
+            st.session_state.pending_pdf_name,
             st.session_state.pending_pages,
             st.session_state.selected_session_count,
-            language=current_language(),
+            current_language(),
         )
-        st.session_state.pending_sections = draft_sections
+        if st.session_state.pending_sections and st.session_state.pending_plan_signature == signature:
+            draft_sections = st.session_state.pending_sections
+        else:
+            draft_sections = StudyService().generate_study_plan_for_sessions(
+                st.session_state.pending_pages,
+                st.session_state.selected_session_count,
+                language=current_language(),
+            )
+            st.session_state.pending_sections = draft_sections
+            st.session_state.pending_plan_signature = signature
         estimated = sum(section.estimated_minutes for section in draft_sections)
         cols = st.columns(3)
         cols[0].metric(t("pages_processed"), len(st.session_state.pending_pages))
