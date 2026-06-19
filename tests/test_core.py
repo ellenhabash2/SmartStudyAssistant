@@ -1,17 +1,40 @@
 from __future__ import annotations
 
+import json
+import sys
+import types
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from core.models import DocumentPage
+from services.context_retrieval_service import ContextRetrievalService
 from services.exam_grading_service import ExamGradingService
 from services.exam_service import ExamOptions, ExamService
 from services.persistence_service import PersistenceService
 from services.progress_service import ProgressService
 from services.quiz_grading_service import QuizGradingService
 from services.section_state_service import SectionStateService
-from services.study_service import StudyService
+from services.study_service import StudySection, StudyService
+
+
+def import_workflow_with_fake_streamlit():
+    fake_streamlit = types.SimpleNamespace(session_state={})
+    with patch.dict(sys.modules, {"streamlit": fake_streamlit}):
+        import ui.workflow as workflow
+    return workflow
+
+
+class FakeSessionState(dict):
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError as exc:
+            raise AttributeError(key) from exc
+
+    def __setattr__(self, key, value):
+        self[key] = value
 
 
 class TestMVPServices(unittest.TestCase):
@@ -33,6 +56,62 @@ class TestMVPServices(unittest.TestCase):
         self.assertEqual(sections[0].start_page, 1)
         self.assertTrue(sections[0].summary)
         self.assertGreaterEqual(len(sections[0].learning_objectives), 2)
+
+    def test_ai_study_plan_is_used_when_valid(self):
+        pages = [
+            DocumentPage(1, "GRAPH SEARCH\nBreadth first search explores neighbors level by level."),
+            DocumentPage(2, "SORTING\nMerge sort divides input and merges sorted halves."),
+        ]
+        ai_payload = {
+            "sections": [
+                {
+                    "section_number": 1,
+                    "title": "Graph Search",
+                    "start_page": 1,
+                    "end_page": 1,
+                    "estimated_minutes": 18,
+                    "difficulty": "Medium",
+                    "summary": "Understand breadth first search and graph exploration order.",
+                    "key_concepts": ["Breadth First Search", "Graph Exploration"],
+                    "learning_objectives": ["Explain level-order graph traversal."],
+                },
+                {
+                    "section_number": 2,
+                    "title": "Sorting",
+                    "start_page": 2,
+                    "end_page": 2,
+                    "estimated_minutes": 20,
+                    "difficulty": "Easy",
+                    "summary": "Understand how merge sort divides and combines sorted data.",
+                    "key_concepts": ["Merge Sort"],
+                    "learning_objectives": ["Describe divide and merge steps."],
+                },
+            ]
+        }
+
+        with patch("services.study_service.GeneralAIService") as ai_service:
+            ai_service.return_value.complete.return_value = {"ok": True, "answer": json.dumps(ai_payload)}
+            sections = StudyService().generate_study_plan_for_sessions(pages, session_count=2)
+
+        self.assertEqual(len(sections), 2)
+        self.assertEqual(sections[0].title, "Section 1: Graph Search")
+        self.assertEqual(sections[0].summary, "Understand breadth first search and graph exploration order.")
+        self.assertEqual(sections[0].key_concepts, ["Breadth First Search", "Graph Exploration"])
+        self.assertEqual(sections[0].difficulty, "Medium")
+
+    def test_malformed_ai_study_plan_falls_back_to_heuristic(self):
+        pages = [
+            DocumentPage(1, "DYNAMIC PROGRAMMING\nMemoization stores repeated subproblem results."),
+            DocumentPage(2, "Tabulation builds solutions from smaller states."),
+        ]
+
+        with patch("services.study_service.GeneralAIService") as ai_service:
+            ai_service.return_value.complete.return_value = {"ok": True, "answer": "not json"}
+            sections = StudyService().generate_study_plan_for_sessions(pages, session_count=2)
+
+        self.assertEqual(len(sections), 2)
+        self.assertEqual(sections[0].start_page, 1)
+        self.assertTrue(sections[0].summary)
 
     def test_empty_text_does_not_generate_study_plan(self):
         pages = [DocumentPage(page_number=1, text="   ")]
@@ -200,6 +279,148 @@ class TestMVPServices(unittest.TestCase):
         self.assertEqual(restored["pdf"]["name"], "notes.pdf")
         self.assertEqual(ProgressService.load(restored["progress"]).completed_sections, {1})
         self.assertEqual(PersistenceService.sections_from_payload(restored)[0].section_number, 1)
+
+    def test_retrieve_relevant_chunks_finds_correct_section(self):
+        chunks = [
+            {
+                "section_number": 1,
+                "section_title": "Breadth First Search",
+                "start_page": 1,
+                "end_page": 2,
+                "page": 1,
+                "text": "BFS explores graph nodes level by level using a queue.",
+                "key_concepts": ["BFS", "Queue"],
+            },
+            {
+                "section_number": 2,
+                "section_title": "Gradient Descent",
+                "start_page": 3,
+                "end_page": 4,
+                "page": 3,
+                "text": "Gradient descent updates model weights using the loss gradient.",
+                "key_concepts": ["Optimization", "Gradient"],
+            },
+        ]
+
+        results = ContextRetrievalService.retrieve_relevant_chunks("How does BFS use a queue?", chunks)
+
+        self.assertEqual(results[0]["section_number"], 1)
+        self.assertIn("BFS", results[0]["text"])
+
+    def test_retrieve_relevant_chunks_returns_empty_for_unrelated_question(self):
+        chunks = [
+            {
+                "section_number": 1,
+                "section_title": "Breadth First Search",
+                "start_page": 1,
+                "end_page": 1,
+                "page": 1,
+                "text": "BFS explores graph nodes level by level.",
+                "key_concepts": ["BFS"],
+            }
+        ]
+
+        results = ContextRetrievalService.retrieve_relevant_chunks("What is photosynthesis?", chunks)
+
+        self.assertEqual(results, [])
+
+    def test_format_chunks_for_prompt_includes_sources(self):
+        formatted = ContextRetrievalService.format_chunks_for_prompt(
+            [
+                {
+                    "section_number": 4,
+                    "section_title": "Shortest Paths",
+                    "start_page": 10,
+                    "end_page": 12,
+                    "page": 11,
+                    "text": "Dijkstra computes shortest paths with non-negative edge weights.",
+                    "key_concepts": ["Dijkstra"],
+                }
+            ]
+        )
+
+        self.assertIn("[Section 4 | Shortest Paths | Page 11]", formatted)
+        self.assertIn("Dijkstra computes shortest paths", formatted)
+
+    def test_retrieve_exam_context_covers_all_sections(self):
+        sections = [
+            StudySection(1, "Section 1: BFS", 1, 1, 10, "Easy", "Graph traversal.", ["Trace BFS."], ["BFS"]),
+            StudySection(2, "Section 2: Gradient Descent", 2, 2, 10, "Medium", "Optimization.", ["Explain updates."], ["Gradient"]),
+        ]
+        pages = [
+            DocumentPage(1, "BFS uses a queue to visit nodes level by level."),
+            DocumentPage(2, "Gradient descent changes weights by following the negative gradient."),
+        ]
+
+        context = ContextRetrievalService.retrieve_exam_context(sections, pages, max_chars=5000)
+
+        self.assertIn("Section 1: BFS", context)
+        self.assertIn("Section 2: Gradient Descent", context)
+        self.assertIn("Representative text:", context)
+
+    def test_question_answering_uses_retrieved_chunks_not_full_pdf(self):
+        workflow = import_workflow_with_fake_streamlit()
+
+        sections = [
+            StudySection(1, "Section 1: BFS", 1, 1, 10, "Easy", "Graph traversal.", [], ["BFS"]),
+            StudySection(2, "Section 2: Gradient Descent", 2, 2, 10, "Medium", "Optimization.", [], ["Gradient"]),
+        ]
+        pages = [
+            DocumentPage(1, "BFS uses a queue to visit graph nodes level by level."),
+            DocumentPage(2, "Gradient descent updates model weights from a loss gradient."),
+        ]
+
+        class FakeSt:
+            session_state = FakeSessionState({
+                "pages": pages,
+                "sections": sections,
+                "language": "en",
+            })
+
+        with patch.object(workflow, "st", FakeSt), patch.object(workflow, "has_pdf", return_value=True):
+            with patch.object(workflow, "GeneralAIService") as ai_service:
+                ai_service.return_value.complete.return_value = {"ok": True, "answer": "BFS uses a queue.\n\nSource: Section 1 - Page 1"}
+                answer = workflow.answer_section_question(sections[0], "How does BFS use a queue?")
+
+        prompt = ai_service.return_value.complete.call_args.args[1]
+        self.assertIn("BFS uses a queue", prompt)
+        self.assertNotIn("Gradient descent updates", prompt)
+        self.assertIn("Retrieved sources:", answer)
+
+    def test_explain_section_still_uses_only_current_section(self):
+        workflow = import_workflow_with_fake_streamlit()
+
+        section = StudySection(1, "Section 1: BFS", 1, 1, 10, "Easy", "Graph traversal.", [], ["BFS"])
+        current_text = "BFS uses a queue to visit graph nodes level by level."
+
+        with patch.object(workflow, "section_context", return_value=current_text):
+            with patch.object(workflow, "GeneralAIService") as ai_service:
+                ai_service.return_value.ask.return_value = {"ok": True, "answer": "BFS explanation", "provider": "test"}
+                answer = workflow.generate_explanation(section)
+
+        prompt = ai_service.return_value.ask.call_args.args[1]
+        self.assertIn(current_text, prompt)
+        self.assertIn("Section title: Section 1: BFS", prompt)
+        self.assertNotIn("Gradient descent", prompt)
+        self.assertIn("BFS explanation", answer)
+
+    def test_unsupported_pdf_question_returns_not_enough_information(self):
+        workflow = import_workflow_with_fake_streamlit()
+
+        sections = [StudySection(1, "Section 1: BFS", 1, 1, 10, "Easy", "Graph traversal.", [], ["BFS"])]
+        pages = [DocumentPage(1, "BFS uses a queue to visit graph nodes level by level.")]
+
+        class FakeSt:
+            session_state = FakeSessionState({
+                "pages": pages,
+                "sections": sections,
+                "language": "en",
+            })
+
+        with patch.object(workflow, "st", FakeSt), patch.object(workflow, "has_pdf", return_value=True):
+            answer = workflow.answer_section_question(sections[0], "What is photosynthesis?")
+
+        self.assertEqual(answer, workflow.NOT_ENOUGH_INFORMATION)
 
 
 if __name__ == "__main__":

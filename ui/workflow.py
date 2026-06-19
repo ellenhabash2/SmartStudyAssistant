@@ -9,6 +9,7 @@ from typing import Any
 
 import streamlit as st
 
+from services.context_retrieval_service import ContextRetrievalService
 from services.exam_service import ExamOptions, ExamService
 from services.general_ai_service import GeneralAIService
 from services.pdf_service import PdfExtractionError, PdfService
@@ -18,6 +19,14 @@ from services.section_state_service import SectionStateService
 from services.study_service import StudySection, StudyService
 from translations import current_language, t, tutor_language_instruction
 from ui.state import has_pdf, page_label, persist_current_state, reset_section_outputs, section_context, source_label
+
+
+NOT_ENOUGH_INFORMATION = "The uploaded PDF does not contain enough information to answer this question."
+GROUNDED_SYSTEM_PROMPT = (
+    "You are a grounded PDF study assistant. "
+    "Answer only using the provided PDF context. "
+    "Do not use outside knowledge. Do not guess."
+)
 
 
 def extract_pdf(uploaded_file: Any) -> None:
@@ -50,6 +59,7 @@ def set_pending_pdf(pdf_bytes: bytes, pdf_name: str, pages: list[Any]) -> None:
         suggested,
         language=current_language(),
     )
+    st.session_state.pending_plan_signature = pending_study_plan_signature(pdf_name, pages, suggested, current_language())
 
     if not st.session_state.pending_sections:
         raise PdfExtractionError(t("no_readable_sessions"))
@@ -60,11 +70,22 @@ def set_pending_pdf(pdf_bytes: bytes, pdf_name: str, pages: list[Any]) -> None:
 def generate_study_plan_from_pending() -> None:
     pages = st.session_state.pending_pages
     session_count = int(st.session_state.selected_session_count or st.session_state.suggested_session_count or 1)
-    sections = StudyService().generate_study_plan_for_sessions(
+    signature = pending_study_plan_signature(
+        st.session_state.pending_pdf_name,
         pages,
         session_count,
-        language=current_language(),
+        current_language(),
     )
+    if st.session_state.pending_sections and st.session_state.pending_plan_signature == signature:
+        sections = st.session_state.pending_sections
+    else:
+        sections = StudyService().generate_study_plan_for_sessions(
+            pages,
+            session_count,
+            language=current_language(),
+        )
+        st.session_state.pending_sections = sections
+        st.session_state.pending_plan_signature = signature
     if not sections:
         raise PdfExtractionError(t("no_readable_sessions"))
 
@@ -84,6 +105,16 @@ def generate_study_plan_from_pending() -> None:
     st.session_state.final_exam_result = None
     reset_section_outputs(sections[0])
     persist_current_state()
+
+
+def pending_study_plan_signature(pdf_name: str, pages: list[Any], session_count: int, language: str) -> str:
+    page_numbers = [
+        str(int(getattr(page, "page_number", 0) or 0))
+        for page in pages
+        if (getattr(page, "text", "") or "").strip()
+    ]
+    text_size = sum(len(getattr(page, "text", "") or "") for page in pages)
+    return f"{pdf_name}:{language}:{int(session_count or 0)}:{text_size}:{','.join(page_numbers)}"
 
 
 def generate_explanation(section: StudySection) -> str:
@@ -140,70 +171,120 @@ def generate_explanation(section: StudySection) -> str:
 
 
 def answer_section_question(section: StudySection, question: str) -> str:
-    text = section_context(section)
-    language = current_language()
-    response = GeneralAIService().ask(
-        [{"role": "user", "content": f"{tutor_language_instruction(language)}\nUse this study section as context when helpful:\n{text[:5000]}"}],
-        question,
-        language=language,
-    )
+    chunks = retrieve_pdf_chunks(question)
+    if not chunks:
+        return NOT_ENOUGH_INFORMATION
 
+    return answer_from_retrieved_chunks(question, chunks)
+
+
+def retrieve_pdf_chunks(question: str, top_k: int = 5) -> list[dict[str, Any]]:
+    if not has_pdf():
+        return []
+    chunks = ContextRetrievalService.build_chunks_from_pages(
+        st.session_state.pages,
+        st.session_state.sections,
+    )
+    return ContextRetrievalService.retrieve_relevant_chunks(question, chunks, top_k=top_k, min_score=1)
+
+
+def answer_from_retrieved_chunks(question: str, chunks: list[dict[str, Any]]) -> str:
+    retrieved_context = ContextRetrievalService.format_chunks_for_prompt(chunks, max_chars=7000)
+    if not retrieved_context:
+        return NOT_ENOUGH_INFORMATION
+
+    prompt = build_grounded_pdf_prompt(question, retrieved_context)
+    response = GeneralAIService().complete(
+        GROUNDED_SYSTEM_PROMPT,
+        prompt,
+        language=current_language(),
+    )
     if response["ok"]:
-        return f"{response['answer']}\n\n{source_label(section)}"
+        return with_retrieved_sources(response["answer"], chunks)
 
-    if not text.strip():
-        if language == "he":
-            return (
-                "לא מצאתי עדיין טקסט קריא לחלק הזה. העלו מחדש את ה-PDF, בדקו שלחלק יש "
-                "טקסט ניתן לחילוץ, ואז שאלו על מונח או דוגמה ספציפיים מהעמוד."
-            )
-        return (
-            "I could not find readable text for this section yet. Re-open the PDF, check that this section has "
-            "extractable text, then ask about a specific term or example from the page."
-        )
+    return with_retrieved_sources(local_grounded_answer(question, chunks), chunks)
 
-    question_words = set(re.findall(r"[A-Za-z0-9]+", question.lower()))
-    sentences = [item.strip() + "." for item in text.replace("\n", " ").split(".") if len(item.split()) > 6]
 
-    best_sentence = sentences[0] if sentences else response.get("answer", "No text found.")
-    for sentence in sentences:
-        sentence_words = set(re.findall(r"[A-Za-z0-9]+", sentence.lower()))
-        if question_words & sentence_words:
-            best_sentence = sentence
-            break
-
-    concepts = ", ".join(section.key_concepts[:3]) or ("המושגים המרכזיים" if language == "he" else "the main concepts")
-    if language == "he":
-        return (
-            f"**תשובת חלק לא מקוונת**\n\n"
-            f"מצאתי שורה קשורה בחלק הנוכחי: {best_sentence}\n\n"
-            f"השתמשו בה כדי לחזור על {concepts}. שאלות המשך טובות הן: "
-            f"\"האם אני יכול להסביר את זה במילים שלי?\", \"איזו דוגמה תומכת בזה?\", ו"
-            f"\"איך זה יכול להופיע בשאלון?\"\n\n"
-            f"{source_label(section)}"
-        )
+def build_grounded_pdf_prompt(question: str, retrieved_context: str) -> str:
     return (
-        f"**Offline section answer**\n\n"
-        f"I found this related line in the current section: {best_sentence}\n\n"
-        f"Use it to review {concepts}. Good follow-up questions are: "
-        f"\"Can I explain this in my own words?\", \"What example supports it?\", and "
-        f"\"How could this appear on a quiz?\"\n\n"
-        f"{source_label(section)}"
+        "You are a grounded PDF study assistant.\n"
+        "Answer ONLY using the provided PDF context.\n"
+        "Do not use outside knowledge.\n"
+        "Do not guess.\n"
+        "If the answer is not supported by the provided PDF context, reply exactly:\n"
+        f"\"{NOT_ENOUGH_INFORMATION}\"\n"
+        "When you answer, include a short source line using the provided section/page metadata.\n\n"
+        f"Provided PDF context:\n{retrieved_context}\n\n"
+        f"Question:\n{question}"
     )
+
+
+def with_retrieved_sources(answer: str, chunks: list[dict[str, Any]]) -> str:
+    if (answer or "").strip() == NOT_ENOUGH_INFORMATION:
+        return NOT_ENOUGH_INFORMATION
+    labels = ContextRetrievalService.source_labels(chunks)
+    if not labels:
+        return answer.strip() or NOT_ENOUGH_INFORMATION
+    sources = "\n".join(f"- {label}" for label in labels)
+    return f"{(answer or NOT_ENOUGH_INFORMATION).strip()}\n\nRetrieved sources:\n{sources}"
+
+
+def local_grounded_answer(question: str, chunks: list[dict[str, Any]]) -> str:
+    query_tokens = ContextRetrievalService._tokens(question)
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
+    for chunk in chunks:
+        text = str(chunk.get("text", "") or "")
+        for sentence in split_sentences(text):
+            overlap = len(query_tokens & ContextRetrievalService._tokens(sentence))
+            if overlap:
+                candidates.append((overlap, sentence, chunk))
+
+    candidates.sort(key=lambda item: (-item[0], len(item[1])))
+    if candidates:
+        _, sentence, chunk = candidates[0]
+        return f"{sentence}\n\n{source_line(chunk)}"
+
+    first_chunk = chunks[0] if chunks else {}
+    excerpt = " ".join(str(first_chunk.get("text", "") or "").split())[:500].rstrip()
+    if not excerpt:
+        return NOT_ENOUGH_INFORMATION
+    return f"{excerpt}\n\n{source_line(first_chunk)}"
+
+
+def split_sentences(text: str) -> list[str]:
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or "")
+        if len(sentence.strip().split()) >= 5
+    ]
+
+
+def source_line(chunk: dict[str, Any]) -> str:
+    section_number = int(chunk.get("section_number", 0) or 0)
+    title = str(chunk.get("section_title", "") or "Untitled section")
+    start_page = int(chunk.get("start_page", chunk.get("page", 0)) or 0)
+    end_page = int(chunk.get("end_page", start_page) or start_page)
+    if start_page == end_page:
+        return f"Source: Section {section_number} - {title} - Page {start_page}"
+    return f"Source: Section {section_number} - {title} - Pages {start_page}-{end_page}"
 
 
 def answer_ai_tutor(question: str, use_pdf_context: bool = False) -> dict[str, Any]:
     language = current_language()
-    context_message = ""
     if use_pdf_context and has_pdf():
-        context_message = all_study_context()[:6000]
+        chunks = retrieve_pdf_chunks(question)
+        if not chunks:
+            return {"ok": False, "answer": NOT_ENOUGH_INFORMATION, "provider": "local"}
+        answer = answer_from_retrieved_chunks(question, chunks)
+        return {"ok": True, "answer": answer, "provider": "grounded-pdf"}
 
     messages = list(st.session_state.ai_tutor_history)
-    if context_message:
-        messages.append({"role": "user", "content": f"{tutor_language_instruction(language)}\nOptional uploaded PDF context:\n{context_message}"})
-
     result = GeneralAIService().ask(messages, question, language=language)
     if result["ok"]:
+        result["answer"] = (
+            f"{result['answer']}\n\n"
+            "_General AI mode: this answer is not grounded in the uploaded PDF._"
+        )
         return result
 
     if language == "he":
@@ -217,7 +298,7 @@ def answer_ai_tutor(question: str, use_pdf_context: bool = False) -> dict[str, A
     else:
         available = "I can use your uploaded PDF sections." if has_pdf() else "Upload a PDF to give me study context."
         fallback = (
-            "AI Tutor needs `OPENAI_API_KEY` or `GROQ_API_KEY` for a full answer. "
+            "AI Tutor needs `OPENAI_API_KEY` or `GROQ_API_KEY` for a full general-mode answer. "
             f"{available} For now, try asking one focused question such as "
             "\"summarize this section\", \"quiz me on the key concepts\", or "
             "\"explain the hardest term in simple words.\""
@@ -288,8 +369,13 @@ def all_study_context() -> str:
 
 
 def generate_final_exam(question_count: int, difficulty: str) -> dict[str, Any]:
+    context = ContextRetrievalService.retrieve_exam_context(
+        st.session_state.sections,
+        st.session_state.pages,
+        max_chars=12000,
+    )
     return ExamService().generate_final_exam(
-        all_study_context(),
+        context,
         ExamOptions(question_count=int(question_count), difficulty=difficulty, language=current_language()),
     )
 
