@@ -644,11 +644,11 @@ Retrieved sources:
 Example input:
 
 ```text
-User question: "Help me prepare for an algorithms exam."
+User question: "Help me build a study plan."
 Use uploaded PDF context: true
 Locally retrieved chunks:
-[Section 1 | Complexity | Page 1]
-[Section 2 | Graph Search | Page 4]
+[Section 1 | Core Concepts | Page 1]
+[Section 2 | Examples and Practice | Page 4]
 ```
 
 Constructed prompt excerpt:
@@ -659,20 +659,20 @@ You are a grounded PDF study assistant.
 
 User:
 Provided PDF context:
-[Section 1 | Complexity | Page 1]
+[Section 1 | Core Concepts | Page 1]
 ...
-[Section 2 | Graph Search | Page 4]
+[Section 2 | Examples and Practice | Page 4]
 ...
 
 Question:
-Help me prepare for an algorithms exam.
+Help me build a study plan.
 ```
 
 Expected response:
 
 ```text
-Start by reviewing the main sections: complexity analysis, graph search, and shortest paths.
-For each topic, write definitions, trace one worked example, and answer practice questions.
+Start by reviewing the main sections, then divide the material into short daily study blocks.
+For each block, write a short summary, review key terms, and answer practice questions.
 ```
 
 ### Quiz Generation Example

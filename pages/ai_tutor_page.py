@@ -29,9 +29,9 @@ def render_ai_tutor() -> None:
 def render_general_tutor() -> None:
     st.caption(t("ai_tutor_caption"))
     prompts = [
-        t("prompt_recursion"),
-        t("prompt_algorithms_exam"),
-        t("prompt_big_o"),
+        t("prompt_summarize_material"),
+        t("prompt_explain_concept"),
+        t("prompt_study_plan"),
         t("prompt_practice_questions"),
     ]
     prompt_cols = st.columns(4)
