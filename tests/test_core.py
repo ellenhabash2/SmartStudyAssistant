@@ -353,6 +353,91 @@ class TestMVPServices(unittest.TestCase):
         self.assertIn("[Section 4 | Shortest Paths | Page 11]", formatted)
         self.assertIn("Dijkstra computes shortest paths", formatted)
 
+    def test_detect_query_intent_chapter_summary_digit(self):
+        intent = ContextRetrievalService.detect_query_intent("what is the main idea of chapter 4?")
+
+        self.assertEqual(intent["intent"], "chapter_summary")
+        self.assertEqual(intent["chapter_numbers"], [4])
+        self.assertTrue(intent["wants_main_idea"])
+
+    def test_detect_query_intent_multiple_chapters(self):
+        intent = ContextRetrievalService.detect_query_intent("give me the main idea for chapter 4 and 5")
+
+        self.assertEqual(intent["intent"], "chapter_summary")
+        self.assertEqual(intent["chapter_numbers"], [4, 5])
+
+    def test_detect_query_intent_number_words(self):
+        intent = ContextRetrievalService.detect_query_intent("summarize chapter four")
+
+        self.assertEqual(intent["intent"], "chapter_summary")
+        self.assertEqual(intent["chapter_numbers"], [4])
+
+    def test_build_document_index_detects_chapter_heading(self):
+        pages = [
+            DocumentPage(10, "Preface and learning goals."),
+            DocumentPage(11, "Chapter 4 Learning\nLearning changes behavior through experience."),
+            DocumentPage(12, "Reinforcement and practice examples."),
+        ]
+
+        index = ContextRetrievalService.build_document_index(pages, [])
+
+        chapter = next(item for item in index["chapters"] if item["chapter_number"] == 4)
+        self.assertEqual(chapter["start_page"], 11)
+        self.assertEqual(chapter["matched_by"], "heading")
+        self.assertIn("Learning", chapter["title"])
+
+    def test_retrieve_chapter_context_uses_heading_range(self):
+        pages = [
+            DocumentPage(1, "Chapter 4 Learning\nLearning changes behavior through experience."),
+            DocumentPage(2, "Classical conditioning pairs stimuli."),
+            DocumentPage(3, "Chapter 5 Memory\nMemory stores and retrieves information."),
+            DocumentPage(4, "Encoding and retrieval cues support remembering."),
+        ]
+
+        context, sources = ContextRetrievalService.retrieve_chapter_context([4], pages, [], max_chars=5000)
+
+        self.assertIn("[Chapter 4", context)
+        self.assertIn("Classical conditioning", context)
+        self.assertNotIn("Memory stores", context)
+        self.assertEqual(sources[0]["type"], "chapter")
+        self.assertEqual(sources[0]["start_page"], 1)
+        self.assertEqual(sources[0]["end_page"], 2)
+
+    def test_retrieve_chapter_context_falls_back_to_study_section(self):
+        pages = [
+            DocumentPage(10, "Learning changes behavior through experience."),
+            DocumentPage(11, "Reinforcement strengthens behavior."),
+        ]
+        sections = [
+            StudySection(4, "Learning", 10, 11, 20, "Medium", "Learning principles.", ["Review conditioning."], ["Learning"])
+        ]
+
+        context, sources = ContextRetrievalService.retrieve_chapter_context([4], pages, sections, max_chars=5000)
+
+        self.assertIn("[Chapter 4", context)
+        self.assertIn("Reinforcement strengthens behavior", context)
+        self.assertEqual(sources[0]["type"], "study_section")
+        self.assertEqual(sources[0]["matched_by"], "section_fallback")
+
+    def test_retrieve_relevant_chunks_adds_match_reason(self):
+        chunks = [
+            {
+                "section_number": 4,
+                "section_title": "Learning",
+                "start_page": 10,
+                "end_page": 12,
+                "page": 10,
+                "text": "Conditioning is a learning process.",
+                "key_concepts": ["Learning"],
+            }
+        ]
+
+        results = ContextRetrievalService.retrieve_relevant_chunks("main idea of section 4", chunks)
+
+        self.assertEqual(results[0]["section_number"], 4)
+        self.assertGreaterEqual(results[0]["score"], 10)
+        self.assertIn("match_reason", results[0])
+
     def test_retrieve_exam_context_covers_all_sections(self):
         sections = [
             StudySection(1, "Section 1: BFS", 1, 1, 10, "Easy", "Graph traversal.", ["Trace BFS."], ["BFS"]),
