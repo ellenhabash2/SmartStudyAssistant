@@ -55,7 +55,7 @@ If no relevant PDF chunks are found, the app returns: `The uploaded PDF does not
 
 The app now supports simple local accounts backed by SQLite. Users register or log in before using study features, and each user's uploaded documents and study sessions are kept separate in `.smartstudy.db`.
 
-Saved data includes generated study sections, extracted section text, section completion, explanation text, quiz attempts, quiz scores, final exam attempts, final exam answers, and weak-topic results. Passwords are hashed before storage; plain-text passwords are never written to the database.
+Saved data includes the uploaded PDF bytes, generated study sections, extracted section text, section completion, explanation text, quiz attempts, quiz scores, final exam attempts, final exam answers, and weak-topic results. Storing the PDF bytes locally lets saved sessions restore page images and section PDF downloads after the user clicks Continue. Passwords are hashed before storage; plain-text passwords are never written to the database.
 
 SQLite is local and lightweight, which fits the academic/demo scope of this project. The existing JSON persistence remains as a fallback/legacy path, while logged-in users use SQLite as the preferred persistence layer.
 

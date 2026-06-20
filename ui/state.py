@@ -268,6 +268,7 @@ def persist_sqlite_state() -> None:
             final_exam=st.session_state.final_exam,
             final_exam_answers=st.session_state.final_exam_answers,
             final_exam_result=st.session_state.final_exam_result,
+            pdf_bytes=st.session_state.get("pdf_bytes", b""),
         )
     except Exception as exc:
         st.session_state.db_status_message = f"SQLite save failed: {exc}"

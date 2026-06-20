@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import types
 import unittest
@@ -495,13 +496,37 @@ class TestMVPServices(unittest.TestCase):
                 language="en",
                 pages=pages,
                 sections=sections,
+                pdf_bytes=b"%PDF-1.4 sample bytes",
             )
             loaded = db.load_study_session(user["id"], session_id)
 
         self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["pdf_bytes"], b"%PDF-1.4 sample bytes")
         self.assertEqual(loaded["session"]["filename"], "notes.pdf")
         self.assertEqual(loaded["sections"][0].title, "Section 1: BFS")
         self.assertIn("BFS uses a queue", loaded["pages"][0].text)
+
+    def test_database_migration_adds_pdf_bytes_column(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE documents (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        filename TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+
+            db = DatabaseService(db_path)
+            with db.connect() as conn:
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+
+        self.assertIn("pdf_bytes", columns)
 
     def test_progress_update_persists(self):
         with tempfile.TemporaryDirectory() as tmpdir:

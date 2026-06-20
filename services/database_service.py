@@ -43,6 +43,7 @@ class DatabaseService:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
                     filename TEXT NOT NULL,
+                    pdf_bytes BLOB,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -119,6 +120,7 @@ class DatabaseService:
                 );
                 """
             )
+            self._ensure_column(conn, "documents", "pdf_bytes", "BLOB")
 
     def create_user(self, username: str, password_hash: str) -> dict[str, Any]:
         with self.connect() as conn:
@@ -139,11 +141,11 @@ class DatabaseService:
         with self.connect() as owned_conn:
             return self.get_user_by_id(user_id, conn=owned_conn)
 
-    def create_document(self, user_id: int, filename: str) -> int:
+    def create_document(self, user_id: int, filename: str, pdf_bytes: bytes | None = None) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
-                "INSERT INTO documents (user_id, filename) VALUES (?, ?)",
-                (user_id, filename),
+                "INSERT INTO documents (user_id, filename, pdf_bytes) VALUES (?, ?, ?)",
+                (user_id, filename, sqlite3.Binary(pdf_bytes) if pdf_bytes else None),
             )
             return int(cursor.lastrowid)
 
@@ -164,8 +166,9 @@ class DatabaseService:
         language: str,
         pages: list[DocumentPage],
         sections: list[StudySection],
+        pdf_bytes: bytes | None = None,
     ) -> tuple[int, int]:
-        document_id = self.create_document(user_id, filename)
+        document_id = self.create_document(user_id, filename, pdf_bytes)
         session_id = self.create_study_session(user_id, document_id, title, language)
         self.save_study_sections(session_id, sections, pages)
         return document_id, session_id
@@ -233,7 +236,7 @@ class DatabaseService:
         with self.connect() as conn:
             session = conn.execute(
                 """
-                SELECT ss.*, d.filename
+                SELECT ss.*, d.filename, d.pdf_bytes
                 FROM study_sessions ss
                 JOIN documents d ON d.id = ss.document_id
                 WHERE ss.id = ? AND ss.user_id = ?
@@ -262,6 +265,7 @@ class DatabaseService:
 
             return {
                 "session": dict(session),
+                "pdf_bytes": bytes(session["pdf_bytes"] or b""),
                 "pages": pages,
                 "sections": sections,
                 "progress": progress,
@@ -282,8 +286,11 @@ class DatabaseService:
         final_exam: dict[str, Any] | None,
         final_exam_answers: dict[str, Any],
         final_exam_result: dict[str, Any] | None,
+        pdf_bytes: bytes | None = None,
     ) -> None:
         with self.connect() as conn:
+            if pdf_bytes:
+                self._save_session_pdf_bytes(conn, user_id, session_id, pdf_bytes)
             loaded_progress = ProgressService.load(progress)
             for section in sections:
                 state = SectionStateService.get_state(section_states, section.section_number)
@@ -405,6 +412,32 @@ class DatabaseService:
             WHERE id = (SELECT document_id FROM study_sessions WHERE id = ?)
             """,
             (session_id,),
+        )
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
+        columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+    @staticmethod
+    def _save_session_pdf_bytes(
+        conn: sqlite3.Connection,
+        user_id: int,
+        session_id: int,
+        pdf_bytes: bytes,
+    ) -> None:
+        conn.execute(
+            """
+            UPDATE documents
+            SET pdf_bytes = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = (
+                SELECT document_id
+                FROM study_sessions
+                WHERE id = ? AND user_id = ?
+            )
+            """,
+            (sqlite3.Binary(pdf_bytes), session_id, user_id),
         )
 
     def _replace_quiz_attempt(

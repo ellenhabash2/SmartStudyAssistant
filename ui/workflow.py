@@ -135,6 +135,7 @@ def create_sqlite_session_for_current_plan() -> None:
             language=current_language(),
             pages=st.session_state.pages,
             sections=st.session_state.sections,
+            pdf_bytes=st.session_state.pdf_bytes,
         )
         st.session_state.current_db_document_id = document_id
         st.session_state.current_db_session_id = session_id
@@ -155,7 +156,7 @@ def load_saved_study_session(session_id: int) -> bool:
         return False
 
     session = payload["session"]
-    st.session_state.pdf_bytes = b""
+    st.session_state.pdf_bytes = payload.get("pdf_bytes") or b""
     st.session_state.pdf_name = session.get("filename", "")
     st.session_state.pages = payload["pages"]
     st.session_state.sections = payload["sections"]
