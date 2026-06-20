@@ -20,7 +20,15 @@ from services.quiz_service import QuizService
 from services.section_state_service import SectionStateService
 from services.study_service import StudySection, StudyService
 from translations import current_language, t, tutor_language_instruction
-from ui.state import has_pdf, page_label, persist_current_state, reset_section_outputs, section_context, source_label
+from ui.state import (
+    apply_sqlite_session_payload,
+    has_pdf,
+    page_label,
+    persist_current_state,
+    reset_section_outputs,
+    section_context,
+    source_label,
+)
 
 
 NOT_ENOUGH_INFORMATION = "The uploaded PDF does not contain enough information to answer this question."
@@ -155,21 +163,7 @@ def load_saved_study_session(session_id: int) -> bool:
         st.session_state.db_status_message = "Could not load saved session."
         return False
 
-    session = payload["session"]
-    st.session_state.pdf_bytes = payload.get("pdf_bytes") or b""
-    st.session_state.pdf_name = session.get("filename", "")
-    st.session_state.pages = payload["pages"]
-    st.session_state.sections = payload["sections"]
-    st.session_state.section_states = payload["section_states"]
-    st.session_state.progress = payload["progress"]
-    st.session_state.final_exam = payload["final_exam"]
-    st.session_state.final_exam_answers = payload["final_exam_answers"]
-    st.session_state.final_exam_result = payload["final_exam_result"]
-    st.session_state.current_section_index = 0
-    st.session_state.current_db_document_id = int(session["document_id"])
-    st.session_state.current_db_session_id = int(session["id"])
-    st.session_state.upload_message = f"Loaded saved session for {st.session_state.pdf_name}."
-    st.session_state.db_status_message = "Saved session loaded."
+    apply_sqlite_session_payload(payload)
     persist_current_state()
     return True
 

@@ -806,6 +806,7 @@ class TestMVPServices(unittest.TestCase):
             )
             progress = ProgressService.default_state()
             progress.completed_sections.add(1)
+            progress.actual_study_seconds = 420
             states = SectionStateService.ensure_states({}, [1])
             states["1"]["explanation"] = "BFS explanation"
 
@@ -818,10 +819,13 @@ class TestMVPServices(unittest.TestCase):
                 final_exam=None,
                 final_exam_answers={},
                 final_exam_result=None,
+                current_section_index=2,
             )
             loaded = db.load_study_session(user["id"], session_id)
 
         self.assertIn(1, loaded["progress"].completed_sections)
+        self.assertEqual(loaded["progress"].actual_study_seconds, 420)
+        self.assertEqual(loaded["session"]["current_section_index"], 2)
         self.assertEqual(loaded["section_states"]["1"]["explanation"], "BFS explanation")
 
     def test_quiz_attempt_save_load_works(self):
@@ -892,7 +896,8 @@ class TestMVPServices(unittest.TestCase):
         }
 
         with patch.object(state_module.PersistenceService, "load", return_value=legacy_payload):
-            state_module.init_state()
+            with patch.object(state_module, "restore_latest_sqlite_session"):
+                state_module.init_state()
 
         self.assertEqual(state_module.st.session_state.pdf_name, "")
         self.assertEqual(state_module.st.session_state.pages, [])
@@ -915,12 +920,62 @@ class TestMVPServices(unittest.TestCase):
         state_module = import_state_with_fake_streamlit(session_state)
 
         with patch.object(state_module.PersistenceService, "load", return_value={}):
-            state_module.init_state()
+            with patch.object(state_module, "restore_latest_sqlite_session"):
+                state_module.init_state()
 
         self.assertEqual(state_module.st.session_state.active_auth_user_id, 2)
         self.assertEqual(state_module.st.session_state.pdf_name, "")
         self.assertEqual(state_module.st.session_state.pages, [])
         self.assertEqual(state_module.st.session_state.current_db_session_id, None)
+
+    def test_logged_in_user_autoloads_latest_sqlite_session(self):
+        session_state = FakeSessionState(
+            {
+                "auth_user": {"id": 1, "username": "student"},
+                "active_auth_user_id": 1,
+                "pdf_name": "",
+                "pages": [],
+                "sections": [],
+                "current_db_session_id": None,
+                "persistence_loaded": True,
+                "sqlite_autoload_user_id": None,
+                "progress": ProgressService.default_state(),
+            }
+        )
+        state_module = import_state_with_fake_streamlit(session_state)
+        progress = ProgressService.default_state()
+        progress.actual_study_seconds = 300
+        payload = {
+            "session": {
+                "id": 7,
+                "document_id": 9,
+                "filename": "notes.pdf",
+                "current_section_index": 1,
+            },
+            "pdf_bytes": b"%PDF",
+            "pages": [DocumentPage(1, "Saved text")],
+            "sections": [StudySection(1, "Saved Section", 1, 1, 20, "Easy", "Saved summary.", [], ["Saved"])],
+            "section_states": {"1": SectionStateService.default_state()},
+            "progress": progress,
+            "final_exam": None,
+            "final_exam_answers": {},
+            "final_exam_result": None,
+        }
+
+        class FakeDatabase:
+            def list_study_sessions(self, user_id):
+                return [{"id": 7}]
+
+            def load_study_session(self, user_id, session_id):
+                return payload
+
+        with patch("services.database_service.DatabaseService", return_value=FakeDatabase()):
+            state_module.restore_latest_sqlite_session()
+
+        self.assertEqual(state_module.st.session_state.pdf_name, "notes.pdf")
+        self.assertEqual(state_module.st.session_state.current_db_session_id, 7)
+        self.assertEqual(state_module.st.session_state.current_section_index, 1)
+        self.assertEqual(state_module.st.session_state.progress.actual_study_seconds, 300)
 
 
 if __name__ == "__main__":
