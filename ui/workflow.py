@@ -10,6 +10,8 @@ from typing import Any
 import streamlit as st
 
 from services.context_retrieval_service import ContextRetrievalService
+from services.auth_service import AuthService
+from services.database_service import DatabaseService
 from services.exam_service import ExamOptions, ExamService
 from services.general_ai_service import GeneralAIService
 from services.pdf_service import PdfExtractionError, PdfService
@@ -103,6 +105,7 @@ def generate_study_plan_from_pending() -> None:
     st.session_state.final_exam = None
     st.session_state.final_exam_answers = {}
     st.session_state.final_exam_result = None
+    create_sqlite_session_for_current_plan()
     reset_section_outputs(sections[0])
     persist_current_state()
 
@@ -115,6 +118,59 @@ def pending_study_plan_signature(pdf_name: str, pages: list[Any], session_count:
     ]
     text_size = sum(len(getattr(page, "text", "") or "") for page in pages)
     return f"{pdf_name}:{language}:{int(session_count or 0)}:{text_size}:{','.join(page_numbers)}"
+
+
+def create_sqlite_session_for_current_plan() -> None:
+    user = AuthService().current_user()
+    if not user:
+        st.session_state.current_db_document_id = None
+        st.session_state.current_db_session_id = None
+        return
+    try:
+        first_title = st.session_state.sections[0].title if st.session_state.sections else st.session_state.pdf_name
+        document_id, session_id = DatabaseService().create_session_from_state(
+            user_id=int(user["id"]),
+            filename=st.session_state.pdf_name,
+            title=first_title,
+            language=current_language(),
+            pages=st.session_state.pages,
+            sections=st.session_state.sections,
+        )
+        st.session_state.current_db_document_id = document_id
+        st.session_state.current_db_session_id = session_id
+        st.session_state.db_status_message = "Study session saved."
+    except Exception as exc:
+        st.session_state.current_db_document_id = None
+        st.session_state.current_db_session_id = None
+        st.session_state.db_status_message = f"SQLite session save failed: {exc}"
+
+
+def load_saved_study_session(session_id: int) -> bool:
+    user = AuthService().current_user()
+    if not user:
+        return False
+    payload = DatabaseService().load_study_session(int(user["id"]), int(session_id))
+    if not payload:
+        st.session_state.db_status_message = "Could not load saved session."
+        return False
+
+    session = payload["session"]
+    st.session_state.pdf_bytes = b""
+    st.session_state.pdf_name = session.get("filename", "")
+    st.session_state.pages = payload["pages"]
+    st.session_state.sections = payload["sections"]
+    st.session_state.section_states = payload["section_states"]
+    st.session_state.progress = payload["progress"]
+    st.session_state.final_exam = payload["final_exam"]
+    st.session_state.final_exam_answers = payload["final_exam_answers"]
+    st.session_state.final_exam_result = payload["final_exam_result"]
+    st.session_state.current_section_index = 0
+    st.session_state.current_db_document_id = int(session["document_id"])
+    st.session_state.current_db_session_id = int(session["id"])
+    st.session_state.upload_message = f"Loaded saved session for {st.session_state.pdf_name}."
+    st.session_state.db_status_message = "Saved session loaded."
+    persist_current_state()
+    return True
 
 
 def generate_explanation(section: StudySection) -> str:

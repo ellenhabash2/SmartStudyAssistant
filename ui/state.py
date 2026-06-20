@@ -37,6 +37,9 @@ def init_state() -> None:
         "final_exam": None,
         "final_exam_answers": {},
         "final_exam_result": None,
+        "current_db_document_id": None,
+        "current_db_session_id": None,
+        "db_status_message": "",
         "weak_topic_review": "",
         "current_page": DEFAULT_CURRENT_PAGE,
         "language": DEFAULT_LANGUAGE,
@@ -176,6 +179,9 @@ def overall_progress() -> float:
 
 
 def persist_current_state() -> None:
+    # JSON persistence remains as a legacy/offline fallback. When a logged-in
+    # user has an active SQLite session, the same runtime state is also saved
+    # to the local database.
     payload = PersistenceService.build_payload(
         pdf_name=st.session_state.pdf_name,
         pages=st.session_state.pages,
@@ -188,3 +194,29 @@ def persist_current_state() -> None:
         current_section_index=st.session_state.current_section_index,
     )
     PersistenceService.save(payload)
+    persist_sqlite_state()
+
+
+def persist_sqlite_state() -> None:
+    session_id = st.session_state.get("current_db_session_id")
+    if not session_id:
+        return
+    try:
+        from services.auth_service import AuthService
+        from services.database_service import DatabaseService
+
+        user = AuthService().current_user()
+        if not user:
+            return
+        DatabaseService().save_runtime_state(
+            user_id=int(user["id"]),
+            session_id=int(session_id),
+            sections=st.session_state.sections,
+            progress=ProgressService.load(st.session_state.progress),
+            section_states=st.session_state.section_states,
+            final_exam=st.session_state.final_exam,
+            final_exam_answers=st.session_state.final_exam_answers,
+            final_exam_result=st.session_state.final_exam_result,
+        )
+    except Exception as exc:
+        st.session_state.db_status_message = f"SQLite save failed: {exc}"
